@@ -10,19 +10,31 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // ============================================================================
 // MOCK DE INDEXEDDB EM MEMÓRIA
 // ============================================================================
 
 class IDBRequest {
-  constructor() {
+  constructor(db = null) {
     this.readyState = 'pending';
     this.result = undefined;
     this.error = undefined;
     this.onsuccess = null;
     this.onerror = null;
     this.onupgradeneeded = null;
+    this._db = db;
+    this._transaction = undefined;
+  }
+  get transaction() {
+    if (this._db && this._db._inVersionChangeTransaction) {
+      return new IDBTransaction(this._db, STORES, 'versionchange');
+    }
+    return this._transaction;
+  }
+  set transaction(tx) {
+    this._transaction = tx;
   }
   _resolve(result) {
     this.readyState = 'done';
@@ -173,7 +185,9 @@ class IDBTransaction {
   }
   objectStore(name) {
     if (this._aborted) throw new Error('Transaction aborted');
-    return this._stores.get(name);
+    // Busca dinamicamente do banco: as stores podem ser criadas
+    // durante onupgradeneeded após a obtenção da transação.
+    return this.db._stores.get(name);
   }
   abort() {
     this._aborted = true;
@@ -190,6 +204,7 @@ class IDBDatabase {
   constructor(name, version) {
     this.name = name;
     this.version = version;
+    this._inVersionChangeTransaction = false;
     this.objectStoreNames = {
       _list: new Set(),
       contains(n) { return this._list.has(n); }
@@ -207,6 +222,12 @@ class IDBDatabase {
     return store;
   }
   transaction(storeNames, mode) {
+    if (this._inVersionChangeTransaction) {
+      throw new DOMException(
+        'A version change transaction is running.',
+        'InvalidStateError'
+      );
+    }
     const tx = new IDBTransaction(this, storeNames, mode);
     // Completa assincronamente para permitir cadeia de operações
     setTimeout(() => tx._complete(), 0);
@@ -220,7 +241,7 @@ class IDBDatabase {
 const MOCK_DBS = new Map();
 
 function mockIndexedDBOpen(name, version) {
-  const req = new IDBRequest();
+  const req = new IDBRequest(null);
   setTimeout(() => {
     let db = MOCK_DBS.get(name);
     const isNew = !db;
@@ -228,15 +249,24 @@ function mockIndexedDBOpen(name, version) {
       db = new IDBDatabase(name, version);
       MOCK_DBS.set(name, db);
     }
+    // Substitui o request por um que tenha referência ao banco
+    req._db = db;
     // Define result antes de disparar onupgradeneeded (o handler acessa request.result)
     req.result = db;
     // Se versão aumentou (ou novo) e houver onupgradeneeded
     if (isNew || version > db.version) {
+      const oldVersion = isNew ? 0 : db.version;
       db.version = version;
+      // Marca que estamos dentro de uma transação de mudança de versão.
+      // Durante onupgradeneeded, database.transaction() deve lançar InvalidStateError.
+      db._inVersionChangeTransaction = true;
       req.onupgradeneeded && req.onupgradeneeded({
         target: req,
-        result: db
+        result: db,
+        oldVersion,
+        newVersion: version
       });
+      db._inVersionChangeTransaction = false;
     }
     req._resolve(db);
   }, 0);
@@ -265,15 +295,103 @@ globalThis.IDBDatabase = IDBDatabase;
 // ============================================================================
 
 import { openDatabase, transaction, put, get, getAll, getByIndex, del, clear, count, verifyIntegrity, closeDatabase, STORES, DB_VERSION } from '../src/core/database.js';
+import { DB_VERSION_ATUAL } from '../src/core/migrations.js';
 import {
   getSaldo, getEstado, addCoins, debitCoins, registrarTransacao, getHistorico, contarTransacoes, validarRecompensa, WALLET_DEFAULT_ID
 } from '../src/core/wallet.js';
 import { resumoFinanceiro, detectarDuplicatas, validarConsistencia } from '../src/core/transactions.js';
 import { exportarProgresso, validarEstrutura, importarProgresso, FORMATO_VERSION } from '../src/core/backup.js';
 import { DIFICULDADES_PLINKO, getDificuldadePlinko } from '../src/games/plinko/difficulty.js';
-import { DIFICULDADES_CARTAS_EXPANDIDO, getDificuldadeCartas } from '../src/games/cards/difficulty.js';
+import {
+  DIFICULDADES_CARTAS_EXPANDIDO,
+  DIFICULDADES_CARTAS_SMB3,
+  PROGRESSAO_SMB3,
+  getDificuldadeCartas,
+  getDificuldadeSmb3
+} from '../src/games/cards/difficulty.js';
+// DIFICULDADES_CARTAS_SMB3 / PROGRESSAO_SMB3 / getDificuldadeSmb3 continuam
+// importados apenas para provar que os identificadores internos legados seguem
+// intactos. Nenhum deles participa do fluxo do Jogo da Memória.
 import { calcularPremio } from '../src/games/plinko/rewards.js';
 import { World, createPin, createWall, createBall, Vec } from '../src/games/plinko/physics.js';
+import {
+  MULTISET_CLASSICO, CLASSIC_LEVELS, criarRng, embaralhar,
+  SIMBOLOS_CLASSICOS, SIMBOLOS_EXPANDIDOS, contarPorSimbolo
+} from '../src/games/cards/cards-data.js';
+import {
+  CLASSICO, ATRASOS_SMB3, criarConfigClassica, criarConfigSmb3,
+  sortearLayoutClassico, validarLayoutClassico
+} from '../src/games/cards/classic.js';
+import {
+  criarConfigExpandida, gerarParesExpandido, avaliarDesafios, proximaDificuldade
+} from '../src/games/cards/expanded.js';
+import { criarPartida, criarSessao } from '../src/games/cards/board.js';
+import { criarRenderer } from '../src/games/cards/renderer.js';
+import { PROGRESSAO_CARTAS } from '../src/games/cards/difficulty.js';
+import {
+  VISUALIZACAO_CARTAS,
+  VISUALIZACAO_PADRAO,
+  MODALIDADES_CARTAS,
+  MODALIDADE_PADRAO,
+  QUANTIDADE_CHEAT_PADRAO,
+  normalizarVisualizacaoCartas,
+  normalizarModalidadeCartas,
+  normalizarBooleano,
+  normalizarQuantidadeCheat,
+  normalizarVolumeCartas,
+  normalizarSelfiesAtivas,
+  VOLUME_FX_PADRAO,
+  VOLUME_BGM_PADRAO,
+  obterVolumesCartas,
+  salvarVolumesCartas,
+  obterVisualizacaoCartas,
+  salvarVisualizacaoCartas,
+  obterPreferenciasCartas,
+  salvarPreferenciasCartas,
+  obterModalidadeCartas,
+  salvarModalidadeCartas,
+  obterAudioCartas,
+  salvarAudioCartas,
+  obterSelfiesAtivas,
+  salvarSelfiesAtivas
+} from '../src/core/settings.js';
+import { renderizarConfiguracoes } from '../src/ui/panels.js';
+import {
+  obterPerfil,
+  salvarPerfil,
+  normalizarNomePerfil,
+  normalizarAvatarPerfil
+} from '../src/core/profile.js';
+import { renderizarPerfil } from '../src/ui/profile.js';
+import {
+  registrarPartida, listarPartidas, obterEstatisticas, contarPartidas, JOGO_PADRAO
+} from '../src/core/game-stats.js';
+import {
+  TAMANHO_CARTA,
+  MIME_SAIDA,
+  QUALIDADE_SAIDA,
+  TAMANHO_MAXIMO_ARQUIVO,
+  ENQUADRAMENTO_PADRAO,
+  normalizarEnquadramento,
+  lerArquivoComoDataUrl,
+  processarImagem,
+  criarSelfie,
+  listarSelfies,
+  obterSelfie,
+  definirSelfieAtiva,
+  substituirSelfie,
+  excluirSelfie
+} from '../src/core/selfies.js';
+import {
+  TENTATIVAS_INICIAIS,
+  TIPOS_CHEAT,
+  BONUS_SELFIE_TENTATIVAS,
+  tentativasPorDificuldade,
+  normalizarQuantidade,
+  resolverCheat,
+  calcularTentativasIniciais,
+  ehSelfie
+} from '../src/games/cards/tentativas.js';
 
 // ============================================================================
 // CONTADORES DE TESTES
@@ -386,6 +504,65 @@ async function grupoBanco() {
       // Reabrir deve funcionar
       const db = await openDatabase();
       assert.ok(db);
+    });
+
+    await test('primeira criação insere dados iniciais via transação de versão', async () => {
+      await resetDB();
+      const db = await openDatabase();
+      // Verifica que dados iniciais existem nas stores
+      const profile = await getAll('profile');
+      assert.ok(profile.length >= 1);
+      assert.strictEqual(profile[0].nome, 'Jogador');
+
+      const wallet = await getAll('wallet');
+      assert.ok(wallet.length >= 1);
+      assert.strictEqual(wallet[0].saldo, 0);
+
+      const metadata = await getAll('metadata');
+      assert.ok(metadata.length >= 1);
+      assert.strictEqual(metadata[0].versaoBanco, DB_VERSION);
+
+      const settings = await getAll('settings');
+      assert.ok(settings.length >= 1);
+      assert.strictEqual(settings[0].dificuldadePlinko, 'normal');
+    });
+
+    await test('não lança InvalidStateError durante onupgradeneeded', async () => {
+      // Se o código tentasse chamar database.transaction() dentro de
+      // onupgradeneeded, o mock lançaria InvalidStateError (simulando o Chrome).
+      await resetDB();
+      let erro = null;
+      try {
+        await openDatabase();
+      } catch (e) {
+        erro = e;
+      }
+      assert.strictEqual(erro, null, 'não deve lançar erro ao abrir o banco');
+    });
+
+    await test('abertura posterior preserva dados existentes (sem duplicação)', async () => {
+      await resetDB();
+      const db1 = await openDatabase();
+      const antes = await getAll('wallet');
+      assert.ok(antes.length === 1);
+
+      // Reabre o banco sem alterar versão (onupgradeneeded não dispara)
+      closeDatabase();
+      const db2 = await openDatabase();
+      const depois = await getAll('wallet');
+      assert.strictEqual(depois.length, 1, 'não deve duplicar dados iniciais');
+      assert.strictEqual(depois[0].saldo, 0);
+    });
+
+    await test('caminho onupgradeneeded usa transação de versão existente', async () => {
+      // Se openDatabase chamasse database.transaction() dentro de onupgradeneeded,
+      // o mock lançaria InvalidStateError e este teste falharia.
+      await resetDB();
+      const db = await openDatabase();
+      assert.ok(db);
+      for (const store of STORES) {
+        assert.ok(db.objectStoreNames.contains(store), `store ${store} ausente`);
+      }
     });
   });
 }
@@ -614,7 +791,9 @@ async function grupoBackup() {
           profile: [{ nome: 'Antigo', criadoEm: Date.now(), atualizadoEm: Date.now(), avatar: null, tema: 'retro' }],
           wallet: [{ saldo: 123, totalConquistado: 200, totalGasto: 77, atualizadoEm: Date.now() }],
           transactions: [],
-          games: [], matches: [], inventory: [], achievements: [], settings: [], metadata: []
+          games: [], matches: [], inventory: [], achievements: [], settings: [], metadata: [],
+          // Backup com a versão atual do banco precisa conter todas as stores.
+          selfies: []
         }
       };
       const valido = validarEstrutura(backupAntigo);
@@ -709,11 +888,2678 @@ async function grupoPlinko() {
 }
 
 // ============================================================================
+// CARD MATCH — REGRAS, SESSÃO, MODOS E ESTATÍSTICAS
+// ============================================================================
+
+/** Agrupa ids de cartas por símbolo (para montar pares determinísticos). */
+function agruparPorSimbolo(cartas) {
+  const mapa = new Map();
+  for (const carta of cartas) {
+    if (!mapa.has(carta.simbolo)) mapa.set(carta.simbolo, []);
+    mapa.get(carta.simbolo).push(carta.id);
+  }
+  return mapa;
+}
+
+/** Lista todos os pares reais (grupos de 4 cartas geram 2 pares). */
+function listarPares(cartas) {
+  const pares = [];
+  for (const ids of agruparPorSimbolo(cartas).values()) {
+    for (let i = 0; i < ids.length; i += 2) {
+      pares.push([ids[i], ids[i + 1]]);
+    }
+  }
+  return pares;
+}
+
+/** DOM mínimo para verificar a remoção de listeners pelo renderer. */
+class MockClassList {
+  constructor(valor = '') {
+    this.itens = new Set(String(valor).split(/\s+/).filter(Boolean));
+  }
+  add(...classes) { classes.forEach((c) => this.itens.add(c)); }
+  remove(...classes) { classes.forEach((c) => this.itens.delete(c)); }
+  contains(classe) { return this.itens.has(classe); }
+  toggle(classe, forcado) {
+    const ativar = forcado === undefined ? !this.itens.has(classe) : Boolean(forcado);
+    if (ativar) this.itens.add(classe); else this.itens.delete(classe);
+    return ativar;
+  }
+}
+
+class MockNode {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this._classes = '';
+    this.classList = new MockClassList();
+    this.dataset = {};
+    this.attributes = {};
+    this._styleProps = {};
+    this.style = {
+      setProperty: (chave, valor) => { this._styleProps[chave] = String(valor); },
+      removeProperty: (chave) => { delete this._styleProps[chave]; },
+      getPropertyValue: (chave) => this._styleProps[chave] || ''
+    };
+    this._listeners = new Map();
+    this.textContent = '';
+    this.type = '';
+    this.disabled = false;
+  }
+  set className(valor) {
+    this._classes = String(valor);
+    this.classList = new MockClassList(this._classes);
+  }
+  get className() { return this._classes; }
+  appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
+  replaceChildren(...nos) {
+    this.children.forEach((filho) => { filho.parentNode = null; });
+    this.children = [];
+    nos.forEach((no) => this.appendChild(no));
+  }
+  setAttribute(chave, valor) { this.attributes[chave] = String(valor); }
+  getAttribute(chave) { return this.attributes[chave]; }
+  addEventListener(tipo, fn, opcoes = {}) {
+    if (!this._listeners.has(tipo)) this._listeners.set(tipo, new Set());
+    this._listeners.get(tipo).add(fn);
+    if (opcoes.signal) {
+      if (opcoes.signal.aborted) {
+        this._listeners.get(tipo).delete(fn);
+      } else {
+        opcoes.signal.addEventListener('abort', () => {
+          this._listeners.get(tipo)?.delete(fn);
+        });
+      }
+    }
+  }
+  dispatch(tipo, evento = {}) {
+    const evt = { preventDefault() {}, currentTarget: this, ...evento };
+    for (const fn of [...(this._listeners.get(tipo) || [])]) fn(evt);
+  }
+  focus() {}
+  click() { this.dispatch('click'); }
+}
+
+function encontrarNo(node, predicado) {
+  if (predicado(node)) return node;
+  for (const filho of node.children || []) {
+    const encontrado = encontrarNo(filho, predicado);
+    if (encontrado) return encontrado;
+  }
+  return null;
+}
+
+function percorrerNo(node) {
+  const todos = [node];
+  for (const filho of node.children || []) todos.push(...percorrerNo(filho));
+  return todos;
+}
+
+/** Agendador determinístico (sem relógio real) para testar timers da sessão. */
+function criarAgendadorFake() {
+  const agendados = [];
+  let proximoId = 1;
+  return {
+    agendados,
+    setTimeoutFake(fn, ms) {
+      const id = proximoId++;
+      agendados.push({ id, fn, ms, cancelado: false, executado: false });
+      return id;
+    },
+    clearTimeoutFake(id) {
+      const tarefa = agendados.find((item) => item.id === id);
+      if (tarefa) tarefa.cancelado = true;
+    },
+    executarTodos() {
+      let i = 0;
+      while (i < agendados.length) {
+        const tarefa = agendados[i++];
+        if (!tarefa.cancelado && !tarefa.executado) {
+          tarefa.executado = true;
+          tarefa.fn();
+        }
+      }
+    }
+  };
+}
+
+async function grupoCardMatch() {
+  await grupo('Card Match — regras, modos, sessão e estatísticas', async () => {
+    const configClassica = criarConfigClassica(() => 0.1);
+    const gruposClassicos = agruparPorSimbolo(configClassica.cartas);
+    const primeiroParClassico = listarPares(configClassica.cartas)[0];
+    const simbolosDistintos = [...gruposClassicos.keys()];
+    const parErrado = [
+      gruposClassicos.get(simbolosDistintos[0])[0],
+      gruposClassicos.get(simbolosDistintos[1])[0]
+    ];
+
+    await test('embaralhamento Fisher-Yates não muta a entrada e é determinístico', async () => {
+      const original = [1, 2, 3, 4, 5, 6, 7, 8];
+      const copia = embaralhar(original, criarRng(1234));
+      assert.deepEqual([...copia].sort((a, b) => a - b), original);
+      assert.deepEqual(original, [1, 2, 3, 4, 5, 6, 7, 8]);
+      assert.deepEqual(embaralhar(original, criarRng(1234)), copia);
+      assert.notDeepEqual(copia, original);
+    });
+
+    await test('distribuição clássica: 18 cartas, 9 pares e contagens 4/4/4/2/2/2', async () => {
+      assert.strictEqual(CLASSIC_LEVELS.length, 8);
+      for (const layout of CLASSIC_LEVELS) {
+        assert.strictEqual(validarLayoutClassico(layout), true);
+        assert.strictEqual(layout.length, 18);
+      }
+      const contagem = contarPorSimbolo(MULTISET_CLASSICO);
+      assert.deepEqual([...contagem.values()].sort((a, b) => a - b), [2, 2, 2, 4, 4, 4]);
+      assert.strictEqual(SIMBOLOS_CLASSICOS.length, 6);
+      assert.strictEqual(configClassica.cartas.length, 18);
+      assert.strictEqual(configClassica.totalPares, 9);
+      assert.strictEqual(configClassica.colunas, 6);
+      assert.strictEqual(configClassica.linhas, 3);
+      assert.strictEqual(validarLayoutClassico(configClassica.cartas.map((c) => c.simbolo)), true);
+      assert.strictEqual(sortearLayoutClassico(() => 0.999).indice, 7);
+    });
+
+    await test('distribuição expandida: cada dificuldade tem pares exatos e sem sobras', async () => {
+      for (const [chave, diff] of Object.entries(DIFICULDADES_CARTAS_EXPANDIDO)) {
+        const cfg = criarConfigExpandida(chave, criarRng(99));
+        assert.strictEqual(cfg.cartas.length, diff.cartas, `cartas em ${chave}`);
+        assert.strictEqual(cfg.totalPares, diff.pares, `pares em ${chave}`);
+        const contagem = contarPorSimbolo(cfg.cartas.map((c) => c.simbolo));
+        assert.strictEqual(contagem.size, diff.pares, `tipos em ${chave}`);
+        for (const quantidade of contagem.values()) {
+          assert.strictEqual(quantidade, 2, `cada símbolo aparece 2x em ${chave}`);
+        }
+      }
+      const variantes = gerarParesExpandido(30);
+      assert.strictEqual(variantes.length, 30);
+      assert.strictEqual(new Set(variantes.map((p) => p.id)).size, 30);
+      assert.strictEqual(SIMBOLOS_EXPANDIDOS.length, 12);
+    });
+
+    await test('seleção revela a primeira carta e trava na segunda', async () => {
+      const partida = criarPartida(configClassica);
+      const primeiro = partida.selecionar(primeiroParClassico[0]);
+      assert.strictEqual(primeiro.tipo, 'revelado');
+      assert.strictEqual(primeiro.cartas[0].revelada, true);
+      const segundo = partida.selecionar(primeiroParClassico[1]);
+      assert.strictEqual(segundo.tipo, 'comparacao');
+      assert.strictEqual(segundo.aguardandoComparacao, true);
+      assert.deepEqual(segundo.ids, primeiroParClassico);
+    });
+
+    await test('terceira carta é bloqueada durante a comparação', async () => {
+      const partida = criarPartida(configClassica);
+      partida.selecionar(primeiroParClassico[0]);
+      partida.selecionar(primeiroParClassico[1]);
+      const terceira = partida.selecionar(primeiroParClassico[0] === 0 ? 1 : 0);
+      assert.strictEqual(terceira.tipo, 'bloqueado');
+      assert.strictEqual(terceira.cartas.find((c) => c.id === (primeiroParClassico[0] === 0 ? 1 : 0)).revelada, false);
+      assert.strictEqual(terceira.aguardandoComparacao, true);
+    });
+
+    await test('combinação correta marca par e avança o progresso', async () => {
+      const partida = criarPartida(configClassica);
+      partida.selecionar(primeiroParClassico[0]);
+      partida.selecionar(primeiroParClassico[1]);
+      const resultado = partida.resolver();
+      assert.strictEqual(resultado.tipo, 'par');
+      assert.strictEqual(resultado.progresso.pares, 1);
+      assert.strictEqual(resultado.tentativas, 1);
+      assert.strictEqual(resultado.erros, 0);
+      assert.strictEqual(resultado.cartas.find((c) => c.id === primeiroParClassico[0]).pareada, true);
+      assert.strictEqual(resultado.aguardandoComparacao, false);
+      assert.strictEqual(partida.selecionar(primeiroParClassico[0]).tipo, 'ignorado');
+    });
+
+    await test('combinação incorreta contabiliza erro e vira as cartas de volta', async () => {
+      const partida = criarPartida(configClassica);
+      partida.selecionar(parErrado[0]);
+      partida.selecionar(parErrado[1]);
+      const resultado = partida.resolver();
+      assert.strictEqual(resultado.tipo, 'erro');
+      assert.strictEqual(resultado.erros, 1);
+      assert.strictEqual(resultado.progresso.pares, 0);
+      assert.strictEqual(resultado.cartas.find((c) => c.id === parErrado[0]).revelada, false);
+      assert.strictEqual(resultado.cartas.find((c) => c.id === parErrado[1]).revelada, false);
+      assert.strictEqual(resultado.tentativas, 1);
+    });
+
+    await test('conclusão ocorre ao completar os 9 pares e trava novas seleções', async () => {
+      const partida = criarPartida(configClassica);
+      let ultimo;
+      for (const ids of listarPares(configClassica.cartas)) {
+        partida.selecionar(ids[0]);
+        partida.selecionar(ids[1]);
+        ultimo = partida.resolver();
+      }
+      assert.strictEqual(ultimo.tipo, 'concluido');
+      assert.strictEqual(ultimo.concluida, true);
+      assert.strictEqual(ultimo.progresso.pares, 9);
+      assert.strictEqual(ultimo.tentativas, 9);
+      assert.strictEqual(partida.selecionar(0).tipo, 'concluida');
+    });
+
+    await test('reinício zera tentativas, erros, pares e revelações', async () => {
+      const partida = criarPartida(configClassica);
+      partida.selecionar(parErrado[0]);
+      partida.selecionar(parErrado[1]);
+      partida.resolver();
+      const estado = partida.reiniciar();
+      assert.strictEqual(estado.tentativas, 0);
+      assert.strictEqual(estado.erros, 0);
+      assert.strictEqual(estado.progresso.pares, 0);
+      assert.strictEqual(estado.concluida, false);
+      assert.strictEqual(estado.cartas.every((c) => !c.revelada && !c.pareada), true);
+    });
+
+    await test('configuração legada e Jogo da Memória permanecem independentes', async () => {
+      const classico = criarConfigClassica(() => 0.5);
+      const expandido = criarConfigExpandida('facil', criarRng(7));
+      assert.strictEqual(classico.modo, 'classico');
+      assert.strictEqual(classico.dificuldade, 'normal');
+      assert.strictEqual(classico.tempoAlvo, null);
+      assert.ok(classico.tempoMemorizacaoMs > 0);
+      assert.deepEqual(classico.desafios, []);
+      assert.strictEqual(expandido.modo, 'expandido');
+      assert.strictEqual(expandido.dificuldade, 'facil');
+      assert.ok(expandido.tempoAlvo > 0);
+      assert.strictEqual(expandido.desafios.length, 4);
+      assert.strictEqual(expandido.cartas.length, classico.cartas.length);
+      assert.ok(expandido.simbolos.length > classico.simbolos.length,
+        'o expandido deve ter mais tipos de carta que o clássico');
+      const idsClassicos = new Set(classico.simbolos.map((s) => s.id));
+      assert.ok(expandido.simbolos.some((s) => !idsClassicos.has(s.id)),
+        'o expandido deve incluir símbolos exclusivos');
+      assert.strictEqual(criarConfigExpandida('extremo', criarRng(1)).cartas.length, 100);
+    });
+
+    await test('progressão e desafios do expandido funcionam de forma previsível', async () => {
+      assert.deepEqual([...PROGRESSAO_CARTAS], ['facil', 'normal', 'dificil', 'muitodificil', 'extremo']);
+      assert.strictEqual(proximaDificuldade('facil'), 'normal');
+      assert.strictEqual(proximaDificuldade('muitodificil'), 'extremo');
+      assert.strictEqual(proximaDificuldade('extremo'), 'facil');
+      const desafios = avaliarDesafios({
+        erros: 0, tentativas: 9, totalPares: 9,
+        tempoSegundos: 30, tempoAlvo: 60
+      });
+      assert.strictEqual(desafios.length, 4);
+      assert.strictEqual(desafios.every((d) => d.concluido), true);
+      const ruins = avaliarDesafios({
+        erros: 5, tentativas: 20, totalPares: 9,
+        tempoSegundos: 90, tempoAlvo: 60
+      });
+      assert.strictEqual(ruins.every((d) => !d.concluido), true);
+    });
+
+    await test('estatísticas persistem na store matches sem tocar na carteira', async () => {
+      await resetDB();
+      const saldoAntes = await getSaldo();
+      const transacoesAntes = await contarTransacoes();
+
+      const primeiro = await registrarPartida({
+        modo: 'classico', concluida: true, vitoria: true,
+        totalCartas: 18, totalPares: 9, paresEncontrados: 9,
+        tentativas: 9, erros: 0, tempoSegundos: 42, playedAt: 1000
+      });
+      assert.strictEqual(primeiro.ok, true);
+      await registrarPartida({
+        jogo: JOGO_PADRAO, modo: 'expandido', dificuldade: 'normal',
+        concluida: true, vitoria: true, totalCartas: 30, totalPares: 15,
+        paresEncontrados: 15, tentativas: 18, erros: 3,
+        tempoSegundos: 95, tempoAlvo: 110, playedAt: 2000,
+        desafios: avaliarDesafios({ erros: 3, tentativas: 18, totalPares: 15, tempoSegundos: 95, tempoAlvo: 110 })
+      });
+
+      assert.strictEqual(await contarPartidas(), 2);
+      const todas = await listarPartidas();
+      assert.strictEqual(todas.length, 2);
+      assert.strictEqual(todas[0].playedAt, 2000, 'mais recente primeiro');
+      assert.strictEqual((await listarPartidas('cards', 'classico')).length, 1);
+      assert.strictEqual((await listarPartidas('cards', 'expandido')).length, 1);
+
+      const stats = await obterEstatisticas();
+      assert.strictEqual(stats.partidas, 2);
+      assert.strictEqual(stats.concluidas, 2);
+      assert.strictEqual(stats.vitorias, 2);
+      assert.strictEqual(stats.pares, 24);
+      assert.strictEqual(stats.erros, 3);
+      assert.strictEqual(stats.melhorTempoSegundos, 42);
+      assert.strictEqual(stats.porModo.classico, 1);
+      assert.strictEqual(stats.porModo.expandido, 1);
+      assert.strictEqual((await obterEstatisticas('cards', 'expandido')).partidas, 1);
+
+      assert.strictEqual(await getSaldo(), saldoAntes);
+      assert.strictEqual(await contarTransacoes(), transacoesAntes);
+    });
+
+    await test('sessão dispara callbacks de par/erro/conclusão via timers controlados', async () => {
+      const ag = criarAgendadorFake();
+      const eventos = [];
+      const sessao = criarSessao(configClassica, {
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        agora: () => 1000,
+        callbacks: {
+          onPar: () => eventos.push('par'),
+          onErro: () => eventos.push('erro'),
+          onConcluido: () => eventos.push('concluido')
+        }
+      });
+
+      sessao.selecionar(parErrado[0]);
+      sessao.selecionar(parErrado[1]);
+      ag.executarTodos();
+      assert.ok(eventos.includes('erro'));
+
+      for (const ids of listarPares(configClassica.cartas)) {
+        sessao.selecionar(ids[0]);
+        sessao.selecionar(ids[1]);
+        ag.executarTodos();
+      }
+      assert.strictEqual(eventos.filter((e) => e === 'par').length, 9);
+      assert.ok(eventos.includes('concluido'));
+      assert.strictEqual(sessao.estatisticas().concluida, true);
+      assert.strictEqual(sessao.estatisticas().tentativas, 10);
+      sessao.destruir();
+    });
+
+    await test('destruir() cancela timers e silencia callbacks pendentes', async () => {
+      const ag = criarAgendadorFake();
+      const eventos = [];
+      const sessao = criarSessao(configClassica, {
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        agora: () => 5000,
+        callbacks: {
+          onPar: () => eventos.push('par'),
+          onErro: () => eventos.push('erro'),
+          onConcluido: () => eventos.push('concluido')
+        }
+      });
+
+      sessao.selecionar(primeiroParClassico[0]);
+      sessao.selecionar(primeiroParClassico[1]);
+      assert.strictEqual(sessao.temporizadoresPendentes, 1);
+      sessao.destruir();
+      assert.strictEqual(sessao.destruida, true);
+      assert.strictEqual(sessao.temporizadoresPendentes, 0);
+      assert.strictEqual(ag.agendados[0].cancelado, true);
+      ag.executarTodos();
+      assert.deepEqual(eventos, []);
+      assert.strictEqual(sessao.selecionar(0).tipo, 'destruida');
+    });
+
+    await test('reiniciar() da sessão limpa temporizadores e reinicia o cronômetro', async () => {
+      const ag = criarAgendadorFake();
+      let agora = 10000;
+      const sessao = criarSessao(configClassica, {
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        agora: () => agora
+      });
+      sessao.selecionar(parErrado[0]);
+      sessao.selecionar(parErrado[1]);
+      assert.strictEqual(sessao.temporizadoresPendentes, 1);
+      agora = 10000 + 45_000;
+      assert.strictEqual(sessao.tempoDecorrido(), 45);
+      const estado = sessao.reiniciar();
+      assert.strictEqual(sessao.temporizadoresPendentes, 0);
+      assert.strictEqual(sessao.tempoDecorrido(), 0);
+      assert.strictEqual(estado.tentativas, 0);
+      assert.strictEqual(estado.cartas.every((c) => !c.revelada), true);
+      sessao.destruir();
+    });
+
+    await test('renderer remove listeners de clique e teclado ao destruir', async () => {
+      const raiz = new MockNode('div');
+      const documentAnterior = globalThis.document;
+      const windowAnterior = globalThis.window;
+      const janela = new MockNode('window');
+      globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+      globalThis.window = janela;
+      try {
+        let iniciadas = 0;
+        const renderer = criarRenderer(raiz, { onIniciar: () => { iniciadas += 1; } });
+        renderer.mostrarMenu({ modo: 'expandido' });
+        const botao = encontrarNo(raiz, (node) =>
+          node.tagName === 'BUTTON' &&
+          /Confirmar dificuldade e jogar|Iniciar partida/.test(node.textContent));
+        assert.ok(botao, 'botão de iniciar não encontrado');
+        botao.dispatch('click');
+        assert.strictEqual(iniciadas, 1);
+
+        renderer.destruir();
+        assert.strictEqual(raiz.children.length, 0);
+        botao.dispatch('click');
+        assert.strictEqual(iniciadas, 1, 'callback não deve disparar após destruir');
+        assert.strictEqual(botao._listeners.get('click').size, 0);
+        assert.strictEqual((janela._listeners.get('keydown') || new Set()).size, 0);
+      } finally {
+        globalThis.document = documentAnterior;
+        globalThis.window = windowAnterior;
+      }
+    });
+
+    await test('layouts base preservados: oito disposições canônicas', async () => {
+      const esperados = [
+        ['shroom', 'flower', 'coins20', 'shroom', 'coins10', 'star',
+          'flower', 'oneup', 'shroom', 'coins10', 'oneup', 'coins20',
+          'star', 'flower', 'star', 'shroom', 'flower', 'star'],
+        ['shroom', 'flower', 'coins20', 'flower', 'coins10', 'star',
+          'coins20', 'oneup', 'shroom', 'coins10', 'oneup', 'flower',
+          'star', 'shroom', 'star', 'shroom', 'flower', 'star'],
+        ['shroom', 'flower', 'oneup', 'flower', 'star', 'star',
+          'coins20', 'star', 'shroom', 'coins10', 'oneup', 'flower',
+          'coins20', 'shroom', 'coins10', 'shroom', 'flower', 'star'],
+        ['flower', 'coins10', 'oneup', 'flower', 'oneup', 'shroom',
+          'star', 'shroom', 'coins20', 'star', 'shroom', 'coins10',
+          'star', 'flower', 'coins20', 'shroom', 'flower', 'star'],
+        ['flower', 'coins20', 'shroom', 'star', 'oneup', 'flower',
+          'oneup', 'flower', 'coins10', 'shroom', 'coins20', 'star',
+          'shroom', 'coins10', 'star', 'shroom', 'flower', 'star'],
+        ['flower', 'star', 'oneup', 'flower', 'coins20', 'shroom',
+          'coins10', 'shroom', 'coins20', 'oneup', 'shroom', 'coins10',
+          'star', 'flower', 'star', 'shroom', 'flower', 'star'],
+        ['flower', 'star', 'oneup', 'flower', 'oneup', 'shroom',
+          'coins10', 'shroom', 'flower', 'star', 'shroom', 'coins10',
+          'star', 'coins20', 'coins20', 'shroom', 'flower', 'star'],
+        ['oneup', 'shroom', 'coins10', 'shroom', 'flower', 'star',
+          'shroom', 'coins10', 'star', 'coins20', 'coins20', 'flower',
+          'star', 'oneup', 'flower', 'shroom', 'flower', 'star']
+      ];
+
+      assert.strictEqual(CLASSIC_LEVELS.length, 8);
+      assert.strictEqual(CLASSICO.quantidadeLayouts, 8);
+      assert.deepEqual(CLASSIC_LEVELS.map((layout) => Array.from(layout)), esperados);
+      for (const layout of CLASSIC_LEVELS) {
+        assert.strictEqual(validarLayoutClassico(layout), true);
+        const contagem = contarPorSimbolo(layout);
+        assert.deepEqual([...contagem.values()].sort((a, b) => a - b), [2, 2, 2, 4, 4, 4]);
+      }
+      assert.strictEqual(new Set(CLASSIC_LEVELS.map((l) => l.join(','))).size, 8);
+      assert.strictEqual(sortearLayoutClassico(() => 0).indice, 0);
+      assert.strictEqual(sortearLayoutClassico(() => 0.999).indice, 7);
+    });
+
+    await test('dificuldades legadas alteram apenas o tempo de memorização', async () => {
+      assert.deepEqual([...PROGRESSAO_SMB3], ['facil', 'normal', 'dificil']);
+      assert.strictEqual(DIFICULDADES_CARTAS_SMB3.facil.tempoMemorizacaoMs, 6000);
+      assert.strictEqual(DIFICULDADES_CARTAS_SMB3.normal.tempoMemorizacaoMs, 3500);
+      assert.strictEqual(DIFICULDADES_CARTAS_SMB3.dificil.tempoMemorizacaoMs, 1500);
+      assert.ok(DIFICULDADES_CARTAS_SMB3.facil.tempoMemorizacaoMs >
+        DIFICULDADES_CARTAS_SMB3.normal.tempoMemorizacaoMs);
+      assert.ok(DIFICULDADES_CARTAS_SMB3.normal.tempoMemorizacaoMs >
+        DIFICULDADES_CARTAS_SMB3.dificil.tempoMemorizacaoMs);
+      assert.strictEqual(getDificuldadeSmb3('invalida'), DIFICULDADES_CARTAS_SMB3.normal);
+
+      const rng = criarRng(123);
+      const facil = criarConfigSmb3('facil', rng);
+      const dificil = criarConfigSmb3('dificil', criarRng(123));
+      assert.strictEqual(facil.tempoMemorizacaoMs, 6000);
+      assert.strictEqual(dificil.tempoMemorizacaoMs, 1500);
+      assert.strictEqual(facil.modo, 'classico');
+      assert.strictEqual(facil.tempoAlvo, null);
+      assert.deepEqual(facil.atrasos, ATRASOS_SMB3);
+      assert.deepEqual(facil.cartas, dificil.cartas);
+      assert.strictEqual(facil.layoutIndice, dificil.layoutIndice);
+      assert.strictEqual(facil.totalCartas, 18);
+      assert.strictEqual(facil.totalPares, 9);
+      assert.strictEqual(facil.colunas, 6);
+      assert.strictEqual(facil.linhas, 3);
+
+      const expandidoAntes = criarConfigExpandida('facil', criarRng(9));
+      criarConfigSmb3('dificil', criarRng(1));
+      const expandidoDepois = criarConfigExpandida('facil', criarRng(9));
+      assert.deepEqual(expandidoDepois.cartas, expandidoAntes.cartas);
+      assert.strictEqual(expandidoDepois.tempoAlvo, 60);
+    });
+
+    await test('sessão legada aplica os atrasos de erro, acerto e conclusão', async () => {
+      const ag = criarAgendadorFake();
+      const cfg = criarConfigSmb3('normal', criarRng(5));
+      const sessao = criarSessao(cfg, {
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        agora: () => 0
+      });
+      const par = listarPares(cfg.cartas)[0];
+      sessao.selecionar(par[0]);
+      sessao.selecionar(par[1]);
+      assert.strictEqual(ag.agendados[0].ms, 800);
+      ag.executarTodos();
+      assert.ok(ag.agendados.some((tarefa) => tarefa.ms === 400));
+      sessao.destruir();
+    });
+
+    await test('menu abre diretamente no Jogo da Memória, sem seleção de modos', async () => {
+      const raiz = new MockNode('div');
+      const documentAnterior = globalThis.document;
+      const windowAnterior = globalThis.window;
+      globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+      globalThis.window = new MockNode('window');
+      try {
+        const eventos = [];
+        const renderer = criarRenderer(raiz, {
+          onTrocarDificuldade: (chave) => eventos.push(`dificuldade:${chave}`)
+        });
+
+        renderer.mostrarMenu({
+          modo: 'expandido',
+          dificuldade: 'normal',
+          dificuldades: PROGRESSAO_CARTAS,
+          nomesDificuldade: Object.fromEntries(
+            PROGRESSAO_CARTAS.map((chave) => [chave, DIFICULDADES_CARTAS_EXPANDIDO[chave].label])
+          )
+        });
+
+        const nos = percorrerNo(raiz);
+        const modos = nos.filter((no) => no.tagName === 'BUTTON' && no.dataset?.modo)
+          .map((no) => no.dataset.modo);
+        const dificuldadesLegadas = nos.filter((no) => no.dataset?.diffSmb3);
+        assert.deepEqual(modos, []);
+        assert.deepEqual(dificuldadesLegadas, []);
+
+        const textos = nos.map((no) => no.textContent).filter(Boolean);
+        assert.ok(textos.includes('JOGO DA MEMÓRIA'));
+        assert.ok(!textos.some((texto) => /SMB3|Expandido|ESCOLHA O MODO|TROCAR MODO/i.test(texto)),
+          'nenhum rótulo de modo inexistente pode aparecer');
+
+        const botaoDificil = encontrarNo(raiz, (no) => no.dataset?.diff === 'dificil');
+        botaoDificil.dispatch('click');
+        assert.deepEqual(eventos, ['dificuldade:dificil']);
+
+        renderer.destruir();
+      } finally {
+        globalThis.document = documentAnterior;
+        globalThis.window = windowAnterior;
+      }
+    });
+
+    await test('apresentação legada revela as 18 cartas e não aceita seleção', async () => {
+      const raiz = new MockNode('div');
+      const documentAnterior = globalThis.document;
+      const windowAnterior = globalThis.window;
+      globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+      globalThis.window = new MockNode('window');
+      try {
+        let selecoes = 0;
+        const renderer = criarRenderer(raiz, { onSelecionar: () => { selecoes += 1; } });
+        const cfg = criarConfigSmb3('facil', criarRng(2));
+        const partida = criarPartida(cfg);
+        renderer.mostrarApresentacao(cfg, partida.estado());
+
+        const cartas = [];
+        for (const no of percorrerNo(raiz)) {
+          if (no.classList.contains('cards__card')) cartas.push(no);
+        }
+        assert.strictEqual(cartas.length, 18);
+        assert.strictEqual(cartas.every((c) => c.classList.contains('cards__card--revelada')), true);
+        assert.ok(encontrarNo(raiz, (no) => no.classList.contains('cards__memoria-barra')));
+        assert.strictEqual(renderer.emApresentacao, true);
+        cartas[0].dispatch('click');
+        assert.strictEqual(selecoes, 0);
+        renderer.destruir();
+      } finally {
+        globalThis.document = documentAnterior;
+        globalThis.window = windowAnterior;
+      }
+    });
+
+    await test('resultado identifica o Jogo da Memória e mantém as saídas', async () => {
+      const raiz = new MockNode('div');
+      const documentAnterior = globalThis.document;
+      const windowAnterior = globalThis.window;
+      globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+      globalThis.window = new MockNode('window');
+      try {
+        const acoes = [];
+        const renderer = criarRenderer(raiz, {});
+        const cfg = criarConfigExpandida('facil', criarRng(3));
+        renderer.mostrarPartida(cfg, criarPartida(cfg).estado());
+        renderer.mostrarResultado({
+          titulo: 'DESAFIO CONCLUÍDO!',
+          linhas: ['Pares: 9/9'],
+          modo: 'expandido',
+          dificuldade: 'Fácil',
+          botoes: [
+            { id: 'rejogar', texto: 'Nova partida', acao: () => acoes.push('rejogar') },
+            { id: 'selecao-modos', texto: 'Alterar configurações', acao: () => acoes.push('config') },
+            { id: 'home', texto: 'Voltar à coleção', acao: () => acoes.push('home') }
+          ]
+        });
+
+        for (const id of ['rejogar', 'selecao-modos', 'home']) {
+          const botao = encontrarNo(raiz, (no) => no.dataset?.acao === id);
+          assert.ok(botao, `botão ${id} não encontrado`);
+          botao.dispatch('click');
+        }
+        assert.deepEqual(acoes, ['rejogar', 'config', 'home']);
+        const resultado = encontrarNo(raiz, (no) => no.classList.contains('cards__result'));
+        assert.ok(encontrarNo(resultado, (no) => no.textContent === 'JOGO DA MEMÓRIA'));
+        assert.ok(encontrarNo(resultado, (no) => no.textContent === 'Dificuldade: Fácil'));
+        assert.ok(!percorrerNo(resultado).some((no) => /SMB3|MODO EXPANDIDO/i.test(no.textContent || '')),
+          'resultado não pode mostrar modos inexistentes');
+        renderer.destruir();
+      } finally {
+        globalThis.document = documentAnterior;
+        globalThis.window = windowAnterior;
+      }
+    });
+
+    await test('rejogar mantém a dificuldade e trocar dificuldade não afeta o Jogo da Memória', async () => {
+      const rng = criarRng(77);
+      const original = criarConfigSmb3('dificil', rng);
+      const reinicio = criarConfigSmb3(original.dificuldade, criarRng(77));
+      assert.strictEqual(reinicio.dificuldade, 'dificil');
+      assert.strictEqual(reinicio.tempoMemorizacaoMs, 1500);
+      assert.deepEqual(reinicio.cartas, original.cartas);
+
+      const trocada = criarConfigSmb3('facil', criarRng(77));
+      assert.strictEqual(trocada.dificuldade, 'facil');
+      assert.strictEqual(trocada.tempoMemorizacaoMs, 6000);
+      assert.deepEqual(trocada.cartas, original.cartas);
+
+      const expandido = criarConfigExpandida('normal', criarRng(77));
+      assert.strictEqual(expandido.dificuldade, 'normal');
+      assert.strictEqual(expandido.cartas.length, 30);
+      assert.strictEqual(expandido.desafios.length, 4);
+    });
+
+    await test('nenhuma referência funcional ao SMB3, iframe ou porta 8771', () => {
+      const arquivos = [
+        'index.html',
+        'src/games/cards/index.js',
+        'src/games/cards/renderer.js',
+        'src/games/cards/styles.css',
+        'styles/main.css',
+        'service-worker.js'
+      ];
+      for (const relativo of arquivos) {
+        const fonte = readFileSync(new URL(`../${relativo}`, import.meta.url), 'utf8');
+        assert.ok(!fonte.includes('8771'), `${relativo} ainda referencia a porta 8771`);
+        assert.ok(!fonte.includes('smb3-original.js'),
+          `${relativo} ainda importa o adaptador do jogo original`);
+        assert.ok(!/criarAdaptadorSmb3Original|iniciarSmb3Original|onTrocarDificuldadeSmb3|onTrocarModo/.test(fonte),
+          `${relativo} ainda tem callback/ fluxo do modo removido`);
+        assert.ok(!/createElement\(['"]iframe['"]\)|<iframe/i.test(fonte),
+          `${relativo} ainda cria um iframe`);
+      }
+      const estilosCartas = readFileSync(
+        new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
+      assert.ok(!/cards__smb3-/.test(estilosCartas), 'estilos do adaptador devem ser removidos');
+    });
+
+    await test('inicialização abre o Jogo da Memória sem tela de seleção de modos', () => {
+      const fluxo = readFileSync(
+        new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      assert.ok(/await abrirMenu\(\);/.test(fluxo), 'init deve abrir diretamente o menu do jogo');
+      assert.ok(!fluxo.includes("abrirMenu('modos')"), 'fluxo de seleção de modos removido');
+      assert.ok(!fluxo.includes('modoAtual'), 'estado do modo removido');
+      assert.ok(fluxo.includes("modo: 'expandido'"),
+        'identificador interno do jogo permanece estável');
+    });
+  });
+}
+
+// ============================================================================
+// CARD MATCH — VISUALIZAÇÃO AMPLIADA DAS CARTAS (EXPANDIDO)
+// ============================================================================
+
+/** Renderer com DOM mock e relógio determinístico para a ampliação. */
+function criarCenarioAmpliacao() {
+  const raiz = new MockNode('div');
+  const documentAnterior = globalThis.document;
+  const windowAnterior = globalThis.window;
+  globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+  globalThis.window = new MockNode('window');
+  const ag = criarAgendadorFake();
+  const eventos = [];
+  const renderer = criarRenderer(raiz, {
+    onSelecionar: (id) => eventos.push(`selecao:${id}`),
+    onTrocarVisualizacaoCartas: (modo) => eventos.push(`visual:${modo}`)
+  }, {
+    setTimeout: ag.setTimeoutFake.bind(ag),
+    clearTimeout: ag.clearTimeoutFake.bind(ag),
+    duracaoAmpliacaoMs: 1750
+  });
+  return {
+    raiz,
+    ag,
+    eventos,
+    renderer,
+    restaurar() {
+      renderer.destruir();
+      globalThis.document = documentAnterior;
+      globalThis.window = windowAnterior;
+    }
+  };
+}
+
+/** Ids das cartas efetivamente desenhadas na ampliação. */
+function idsAmpliados(no) {
+  const ids = [];
+  for (const atual of percorrerNo(no)) {
+    if (atual.dataset?.ampliacaoId) ids.push(atual.dataset.ampliacaoId);
+  }
+  return ids;
+}
+
+function configComVisualizacao(dificuldade, visualizacaoCartas, rng = criarRng(5)) {
+  return { ...criarConfigExpandida(dificuldade, rng), visualizacaoCartas };
+}
+
+async function grupoVisualizacaoCartas() {
+  await grupo('Card Match — visualização ampliada das cartas', async () => {
+    await test('três modos válidos e fallback seguro para valores inválidos', async () => {
+      assert.strictEqual(VISUALIZACAO_PADRAO, 'original');
+      assert.deepEqual(Object.values(VISUALIZACAO_CARTAS), ['original', 'fixa', 'temporaria']);
+      for (const modo of Object.values(VISUALIZACAO_CARTAS)) {
+        assert.strictEqual(normalizarVisualizacaoCartas(modo), modo);
+      }
+      for (const invalido of [undefined, null, '', 'INVALIDO', 0, 1, {}, [], 'fixa ']) {
+        assert.strictEqual(normalizarVisualizacaoCartas(invalido), 'original');
+      }
+    });
+
+    await test('instalação existente sem o campo usa original sem alterar o registro', async () => {
+      await resetDB();
+      await openDatabase();
+      const registros = await getAll('settings');
+      assert.strictEqual(registros.length, 1);
+      assert.strictEqual('visualizacaoCartas' in registros[0], false);
+      assert.strictEqual(await obterVisualizacaoCartas(), 'original');
+      const depois = await getAll('settings');
+      assert.strictEqual('visualizacaoCartas' in depois[0], false, 'ler não deve gravar');
+    });
+
+    await test('persistência na store settings, campos preservados e sobrevivência a reload', async () => {
+      await resetDB();
+      await openDatabase();
+      assert.strictEqual(await salvarVisualizacaoCartas('fixa'), 'fixa');
+      assert.strictEqual(await obterVisualizacaoCartas(), 'fixa');
+      let registros = await getAll('settings');
+      assert.strictEqual(registros.length, 1, 'não pode criar store paralela');
+      assert.strictEqual(registros[0].dificuldadeCartas, 'normal');
+      assert.strictEqual(registros[0].som, true);
+      assert.strictEqual(await salvarVisualizacaoCartas('modo-inexistente'), 'original');
+      assert.strictEqual(await obterVisualizacaoCartas(), 'original');
+      assert.strictEqual(await salvarVisualizacaoCartas('temporaria'), 'temporaria');
+      closeDatabase(); // simula recarregar a página / reiniciar o navegador
+      assert.strictEqual(await obterVisualizacaoCartas(), 'temporaria');
+      registros = await getAll('settings');
+      assert.strictEqual(registros.length, 1);
+      assert.strictEqual(registros[0].visualizacaoCartas, 'temporaria');
+    });
+
+    await test('menu do Expandido oferece três opções e troca sem recarregar', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        c.renderer.mostrarMenu({
+          modo: 'expandido', dificuldade: 'normal', visualizacaoCartas: 'fixa'
+        });
+        const opcoes = [];
+        for (const no of percorrerNo(c.raiz)) {
+          if (no.dataset?.visualizacao) {
+            opcoes.push([no.dataset.visualizacao, no.getAttribute('aria-pressed')]);
+          }
+        }
+        assert.deepEqual(opcoes, [
+          ['original', 'false'], ['fixa', 'true'], ['temporaria', 'false']
+        ]);
+        const botao = encontrarNo(c.raiz, (no) => no.dataset?.visualizacao === 'temporaria');
+        botao.dispatch('click');
+        assert.deepEqual(c.eventos, ['visual:temporaria']);
+        await salvarVisualizacaoCartas('temporaria');
+        c.renderer.mostrarMenu({
+          modo: 'expandido', dificuldade: 'normal', visualizacaoCartas: await obterVisualizacaoCartas()
+        });
+        const ativa = encontrarNo(c.raiz, (no) => no.classList.contains('cards__visual-opt--ativo'));
+        assert.strictEqual(ativa?.dataset.visualizacao, 'temporaria');
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('modo original preserva o layout sem área adicional', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = configComVisualizacao('facil', 'original');
+        const partida = criarPartida(cfg);
+        c.renderer.mostrarPartida(cfg, partida.estado());
+        assert.strictEqual(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao), null);
+        const board = encontrarNo(c.raiz, (no) => no.classList.contains('cards__board'));
+        assert.strictEqual(
+          board.children.filter((no) => no.classList.contains('cards__card')).length, 18
+        );
+        partida.selecionar(listarPares(cfg.cartas)[0][0]);
+        c.renderer.atualizar(partida.estado(), cfg, 1);
+        assert.strictEqual(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao), null);
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('área fixa fica acima do tabuleiro, atualiza e mostra só cartas reveladas', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = configComVisualizacao('facil', 'fixa');
+        const partida = criarPartida(cfg);
+        c.renderer.mostrarPartida(cfg, partida.estado());
+        const area = encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'fixa');
+        assert.ok(area, 'área fixa não encontrada');
+        const indiceArea = area.parentNode.children.indexOf(area);
+        const indiceBoard = area.parentNode.children.findIndex(
+          (no) => no.classList.contains('cards__board')
+        );
+        assert.ok(indiceArea >= 0 && indiceBoard >= 0 && indiceArea < indiceBoard,
+          'área fixa deve ficar acima do tabuleiro');
+        assert.ok(encontrarNo(area, (no) => no.classList.contains('cards__ampliacao-vazio')));
+        assert.strictEqual(area.getAttribute('aria-label'), 'Visualização ampliada da carta');
+
+        const pares = listarPares(cfg.cartas);
+        partida.selecionar(pares[0][0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.deepEqual(idsAmpliados(area), [String(pares[0][0])]);
+
+        partida.selecionar(pares[1][0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.deepEqual(idsAmpliados(area), [String(pares[1][0])]);
+
+        const oculta = cfg.cartas.find((carta) =>
+          !partida.estado().cartas.find((estado) => estado.id === carta.id).revelada);
+        assert.ok(oculta);
+        assert.ok(!idsAmpliados(area).includes(String(oculta.id)),
+          'carta oculta nunca pode ser ampliada');
+
+        partida.resolver(); // pares diferentes: erro, as cartas viram de volta
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.deepEqual(idsAmpliados(area), []);
+        assert.ok(encontrarNo(area, (no) => no.classList.contains('cards__ampliacao-vazio')));
+
+        const par = pares[0];
+        partida.selecionar(par[0]);
+        partida.selecionar(par[1]);
+        partida.resolver();
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.deepEqual(idsAmpliados(area), [String(par[1])]);
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('ampliação temporária expira, reinicia ao trocar de carta e ignora frames repetidos', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = configComVisualizacao('facil', 'temporaria');
+        const partida = criarPartida(cfg);
+        c.renderer.mostrarPartida(cfg, partida.estado());
+        const overlay = encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'temporaria');
+        assert.ok(overlay);
+        assert.strictEqual(overlay.getAttribute('aria-hidden'), 'true');
+        assert.strictEqual(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'fixa'), null);
+
+        const pares = listarPares(cfg.cartas);
+        partida.selecionar(pares[0][0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.ok(overlay.classList.contains('cards__ampliacao--visivel'));
+        assert.strictEqual(overlay.getAttribute('aria-hidden'), 'false');
+        assert.deepEqual(idsAmpliados(overlay), [String(pares[0][0])]);
+        assert.strictEqual(c.ag.agendados.length, 1);
+        assert.strictEqual(c.ag.agendados[0].ms, 1750);
+
+        partida.selecionar(pares[1][0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.strictEqual(c.ag.agendados[0].cancelado, true, 'timer anterior deve ser cancelado');
+        assert.strictEqual(c.ag.agendados.length, 2);
+        assert.deepEqual(idsAmpliados(overlay), [String(pares[1][0])]);
+
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        assert.strictEqual(c.ag.agendados.length, 2, 'frames repetidos não reiniciam o timer');
+
+        c.ag.executarTodos();
+        assert.ok(!overlay.classList.contains('cards__ampliacao--visivel'));
+        assert.strictEqual(overlay.getAttribute('aria-hidden'), 'true');
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('tocar em carta revelada amplia sem gerar seleção duplicada', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = configComVisualizacao('facil', 'temporaria');
+        const partida = criarPartida(cfg);
+        c.renderer.mostrarPartida(cfg, partida.estado());
+        const par = listarPares(cfg.cartas)[0];
+        partida.selecionar(par[0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        c.ag.executarTodos(); // ampliação já expirada
+
+        const cartas = [];
+        for (const no of percorrerNo(c.raiz)) {
+          if (no.classList.contains('cards__card')) cartas.push(no);
+        }
+        const botao = cartas.find((no) => no.dataset.id === String(par[0]));
+        assert.ok(botao);
+        const eventosAntes = c.eventos.length;
+        const timersAntes = c.ag.agendados.length;
+        botao.dispatch('click');
+        assert.strictEqual(c.eventos.length, eventosAntes,
+          'clique em carta revelada não deve chamar onSelecionar');
+        assert.strictEqual(c.ag.agendados.length, timersAntes + 1, 'intervalo deve reiniciar');
+        assert.strictEqual(c.ag.agendados[timersAntes].cancelado, false);
+        const overlay = encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'temporaria');
+        assert.ok(overlay.classList.contains('cards__ampliacao--visivel'));
+        assert.deepEqual(idsAmpliados(overlay), [String(par[0])]);
+
+        const oculta = cartas.find((no) =>
+          !partida.estado().cartas.find((estado) => estado.id === Number(no.dataset.id)).revelada);
+        oculta.dispatch('click');
+        assert.ok(c.eventos.includes(`selecao:${oculta.dataset.id}`),
+          'carta oculta continua usando o fluxo normal de seleção');
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('reinício e conclusão cancelam a ampliação e limpam a área fixa', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = configComVisualizacao('facil', 'temporaria');
+        const partida = criarPartida(cfg);
+        c.renderer.mostrarPartida(cfg, partida.estado());
+        const par = listarPares(cfg.cartas)[0];
+        partida.selecionar(par[0]);
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        c.renderer.cancelarAmpliacao(); // simula reinício da partida
+        const overlay = encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'temporaria');
+        assert.ok(!overlay.classList.contains('cards__ampliacao--visivel'));
+        assert.deepEqual(idsAmpliados(overlay), []);
+        assert.strictEqual(c.ag.agendados.filter((t) => !t.cancelado && !t.executado).length, 0);
+
+        partida.selecionar(par[1]);
+        partida.resolver();
+        c.renderer.atualizar(partida.estado(), cfg, 0);
+        c.renderer.mostrarResultado({ titulo: 'FIM', modo: 'expandido', botoes: [] });
+        assert.ok(!overlay.classList.contains('cards__ampliacao--visivel'));
+        assert.deepEqual(idsAmpliados(overlay), []);
+
+        const cfgFixa = configComVisualizacao('facil', 'fixa');
+        c.renderer.mostrarPartida(cfgFixa, criarPartida(cfgFixa).estado());
+        const area = encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'fixa');
+        assert.ok(encontrarNo(area, (no) => no.classList.contains('cards__ampliacao-vazio')));
+        c.renderer.mostrarMenu({ modo: 'expandido', visualizacaoCartas: 'fixa' });
+        assert.strictEqual(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao), null);
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('troca de preferência aplica imediatamente no renderer sem recriá-lo', async () => {
+      const c = criarCenarioAmpliacao();
+      try {
+        const cfg = { ...criarConfigExpandida('facil', criarRng(17)), visualizacaoCartas: 'original' };
+        c.renderer.mostrarPartida(cfg, criarPartida(cfg).estado());
+        assert.strictEqual(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao), null);
+        const salvo = await salvarVisualizacaoCartas('fixa');
+        assert.strictEqual(salvo, 'fixa');
+        c.renderer.definirVisualizacaoCartas(salvo);
+        c.renderer.atualizar(criarPartida(cfg).estado(), { ...cfg, visualizacaoCartas: salvo }, 0);
+        assert.ok(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'fixa'));
+      } finally {
+        c.restaurar();
+      }
+    });
+
+    await test('cinco dificuldades mantêm regras, cronômetro e comparação intactos', async () => {
+      const errosConsole = [];
+      const consoleErrorOriginal = console.error;
+      console.error = (...args) => errosConsole.push(args.map(String).join(' '));
+      try {
+        for (const chave of PROGRESSAO_CARTAS) {
+          const base = criarConfigExpandida(chave, criarRng(13));
+          const cfg = { ...base, visualizacaoCartas: 'fixa' };
+          assert.strictEqual(cfg.cartas.length, base.cartas.length);
+          assert.strictEqual(cfg.totalPares, base.totalPares);
+          assert.strictEqual(cfg.tempoAlvo, base.tempoAlvo);
+
+          const ag = criarAgendadorFake();
+          const sessao = criarSessao(cfg, {
+            setTimeout: ag.setTimeoutFake.bind(ag),
+            clearTimeout: ag.clearTimeoutFake.bind(ag),
+            agora: () => 1000
+          });
+          const par = listarPares(cfg.cartas)[0];
+          assert.strictEqual(sessao.selecionar(par[0]).tipo, 'revelado');
+          assert.strictEqual(sessao.selecionar(par[1]).tipo, 'comparacao');
+          ag.executarTodos();
+          const stats = sessao.estatisticas();
+          assert.strictEqual(stats.paresEncontrados, 1, `pares em ${chave}`);
+          assert.strictEqual(stats.tentativas, 1, `tentativas em ${chave}`);
+          assert.strictEqual(stats.erros, 0, `erros em ${chave}`);
+
+          const c = criarCenarioAmpliacao();
+          try {
+            c.renderer.mostrarPartida(cfg, sessao.estado());
+            c.renderer.atualizar(sessao.estado(), cfg, 12);
+            const hudTempo = encontrarNo(c.raiz, (no) => no.dataset?.hud === 'tempo');
+            assert.strictEqual(hudTempo.textContent, 'Tempo 00:12');
+            const board = encontrarNo(c.raiz, (no) => no.classList.contains('cards__board'));
+            assert.strictEqual(
+              board.children.filter((no) => no.classList.contains('cards__card')).length,
+              cfg.totalCartas
+            );
+            assert.ok(encontrarNo(c.raiz, (no) => no.dataset?.ampliacao === 'fixa'));
+          } finally {
+            c.restaurar();
+          }
+          sessao.destruir();
+        }
+      } finally {
+        console.error = consoleErrorOriginal;
+      }
+      assert.deepEqual(errosConsole, [], 'nenhum erro no console nos cinco cenários');
+    });
+
+    await test('CSS cobre telas estreitas, orientação horizontal e reduced motion', async () => {
+      const css = readFileSync(new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
+      assert.match(css, /@media\s*\(max-width:\s*560px\)/);
+      assert.match(css, /@media\s*\(max-height:\s*480px\)/);
+      assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+      assert.match(css, /\.cards__ampliacao--temporaria\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*80[^}]*pointer-events:\s*none/s);
+      assert.match(css, /aspect-ratio:\s*3\s*\/\s*4/);
+      assert.match(css, /\.cards__ampliacao--fixa\s*\{[^}]*max-width:\s*100%/s);
+    });
+  });
+}
+
+// ============================================================================
+// CARD MATCH — MODO TENTATIVAS, CHEAT E SELFIES
+// ============================================================================
+
+/** Configuração de teste já resolvedora de CHEAT (como faz o integrador). */
+function configTentativas(dificuldade, opcoes = {}) {
+  const calculo = calcularTentativasIniciais(dificuldade, opcoes.cheat || {});
+  return {
+    ...criarConfigExpandida(dificuldade, criarRng(opcoes.semente ?? 7), {
+      selfies: opcoes.selfies || [],
+      modalidade: opcoes.modalidade || 'tentativas',
+      cheat: calculo
+    }),
+    visualizacaoCartas: 'original'
+  };
+}
+
+/** Dois ids com símbolos diferentes (para forçar um erro). */
+function idsDiferentes(config) {
+  const simbolos = [...new Set(config.cartas.map((carta) => carta.simbolo))];
+  const primeira = config.cartas.find((carta) => carta.simbolo === simbolos[0]);
+  const segunda = config.cartas.find((carta) => carta.simbolo === simbolos[1]);
+  return [primeira.id, segunda.id];
+}
+
+/** Dois ids do mesmo par (para forçar um acerto). */
+function idsIguais(config, simbolo = null) {
+  const alvo = simbolo || config.cartas[0].simbolo;
+  return config.cartas.filter((carta) => carta.simbolo === alvo).slice(0, 2).map((carta) => carta.id);
+}
+
+/** Ids das duas cartas de um par de selfie. */
+function idsParSelfie(config) {
+  const carta = config.cartas.find((item) => item.selfie);
+  if (!carta) return [];
+  return config.cartas.filter((item) => item.simbolo === carta.simbolo).map((item) => item.id);
+}
+
+function resolverPar(partida, ids) {
+  partida.selecionar(ids[0]);
+  partida.selecionar(ids[1]);
+  return partida.resolver();
+}
+
+async function grupoModoTentativas() {
+  await grupo('Card Match — Modo Tentativas e CHEAT', async () => {
+    await test('tabela de tentativas cobre as cinco dificuldades', async () => {
+      assert.deepEqual(TENTATIVAS_INICIAIS, {
+        facil: 14, normal: 22, dificil: 32, muitodificil: 45, extremo: 60
+      });
+      for (const chave of PROGRESSAO_CARTAS) {
+        const diff = DIFICULDADES_CARTAS_EXPANDIDO[chave];
+        assert.strictEqual(tentativasPorDificuldade(chave), TENTATIVAS_INICIAIS[chave]);
+        assert.ok(TENTATIVAS_INICIAIS[chave] > diff.pares, `${chave}: precisa haver margem sobre os pares`);
+        assert.strictEqual(tentativasPorDificuldade('inexistente'), TENTATIVAS_INICIAIS.normal);
+      }
+      assert.strictEqual(BONUS_SELFIE_TENTATIVAS, 2);
+    });
+
+    await test('CHEAT respeita a prioridade infinitas > personalizada > padrão', async () => {
+      assert.deepEqual(resolverCheat({}), {
+        tipo: TIPOS_CHEAT.NORMAL, infinitas: false, quantidade: null
+      });
+      assert.deepEqual(resolverCheat({ personalizada: true, quantidade: 7 }), {
+        tipo: TIPOS_CHEAT.PERSONALIZADA, infinitas: false, quantidade: 7
+      });
+      assert.deepEqual(resolverCheat({ infinitas: true, personalizada: true, quantidade: 7 }), {
+        tipo: TIPOS_CHEAT.INFINITAS, infinitas: true, quantidade: null
+      });
+      assert.strictEqual(normalizarQuantidade(0), 1);
+      assert.strictEqual(normalizarQuantidade(1000), 999);
+      assert.strictEqual(normalizarQuantidade('abc'), 20);
+      assert.strictEqual(normalizarQuantidade('12'), 12);
+    });
+
+    await test('cálculo das tentativas iniciais usa CHEAT por dificuldade', async () => {
+      for (const chave of PROGRESSAO_CARTAS) {
+        const padrao = calcularTentativasIniciais(chave);
+        assert.strictEqual(padrao.valor, TENTATIVAS_INICIAIS[chave]);
+        assert.strictEqual(padrao.tipo, TIPOS_CHEAT.NORMAL);
+
+        const personalizada = calcularTentativasIniciais(chave, {
+          personalizada: true, quantidade: 9
+        });
+        assert.strictEqual(personalizada.valor, 9);
+        assert.strictEqual(personalizada.tipo, TIPOS_CHEAT.PERSONALIZADA);
+
+        const infinitas = calcularTentativasIniciais(chave, {
+          infinitas: true, personalizada: true, quantidade: 9
+        });
+        assert.strictEqual(infinitas.valor, null);
+        assert.strictEqual(infinitas.infinitas, true);
+        assert.strictEqual(infinitas.tipo, TIPOS_CHEAT.INFINITAS);
+      }
+    });
+
+    await test('erros consomem tentativas e acertos não consomem', async () => {
+      const config = configTentativas('facil');
+      const partida = criarPartida(config);
+      assert.strictEqual(partida.estado().tentativasRestantes, 14);
+      assert.strictEqual(partida.estado().modalidade, 'tentativas');
+
+      const erro = resolverPar(partida, idsDiferentes(config));
+      assert.strictEqual(erro.tipo, 'erro');
+      assert.strictEqual(erro.erros, 1);
+      assert.strictEqual(erro.tentativasRestantes, 13);
+      assert.strictEqual(erro.derrota, false);
+
+      const acerto = resolverPar(partida, idsIguais(config));
+      assert.strictEqual(acerto.tipo, 'par');
+      assert.strictEqual(acerto.erros, 1, 'acerto não conta como erro');
+      assert.strictEqual(acerto.tentativasRestantes, 13, 'acerto não consome tentativa');
+    });
+
+    await test('par de selfie concede exatamente +2 tentativas uma única vez', async () => {
+      const selfies = [{ id: 31, nome: 'Minha cara', imagem: 'data:image/jpeg;base64,QUJD' }];
+      const config = configTentativas('normal', { selfies });
+      const partida = criarPartida(config);
+      const ids = idsParSelfie(config);
+      assert.strictEqual(ids.length, 2);
+
+      const antes = partida.estado().tentativasRestantes;
+      const resultado = resolverPar(partida, ids);
+      assert.strictEqual(resultado.tipo, 'par');
+      assert.strictEqual(resultado.tentativasRestantes, antes + BONUS_SELFIE_TENTATIVAS);
+      assert.strictEqual(resultado.selfiesPares, 1);
+      assert.strictEqual(resultado.bonusSelfies, BONUS_SELFIE_TENTATIVAS);
+
+      // O mesmo par não pode ser encontrado duas vezes: a carta já está pareada.
+      const repetido = partida.selecionar(ids[0]);
+      assert.strictEqual(repetido.tipo, 'ignorado');
+      assert.strictEqual(repetido.bonusSelfies, BONUS_SELFIE_TENTATIVAS);
+    });
+
+    await test('esgotamento encerra com derrota e dispara onEsgotado', async () => {
+      const config = configTentativas('facil', { cheat: { personalizada: true, quantidade: 1 } });
+      const ag = criarAgendadorFake();
+      const eventos = [];
+      const sessao = criarSessao(config, {
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        callbacks: {
+          onErro: () => eventos.push('erro'),
+          onEsgotado: () => eventos.push('esgotado'),
+          onConcluido: () => eventos.push('concluido')
+        }
+      });
+      const ids = idsDiferentes(config);
+      sessao.selecionar(ids[0]);
+      sessao.selecionar(ids[1]);
+      ag.executarTodos();
+
+      assert.deepEqual(eventos, ['erro', 'esgotado']);
+      const stats = sessao.estatisticas();
+      assert.strictEqual(stats.concluida, true);
+      assert.strictEqual(stats.derrota, true);
+      assert.strictEqual(stats.tentativasRestantes, 0);
+      assert.strictEqual(stats.modalidade, 'tentativas');
+      assert.strictEqual(stats.cheat, TIPOS_CHEAT.PERSONALIZADA);
+      assert.strictEqual(sessao.estado().selecionadas.length, 0);
+      sessao.destruir();
+    });
+
+    await test('CHEAT de infinitas nunca esgota nem concede bônus numérico', async () => {
+      const selfies = [{ id: 44, nome: 'Eu', imagem: 'data:image/jpeg;base64,QUJD' }];
+      const config = configTentativas('facil', { selfies, cheat: { infinitas: true } });
+      const partida = criarPartida(config);
+      assert.strictEqual(partida.estado().tentativasInfinitas, true);
+      assert.strictEqual(partida.estado().tentativasRestantes, null);
+
+      for (let i = 0; i < 5; i += 1) {
+        const erro = resolverPar(partida, idsDiferentes(config));
+        assert.strictEqual(erro.tipo, 'erro');
+        assert.strictEqual(erro.tentativasRestantes, null);
+      }
+      const par = resolverPar(partida, idsParSelfie(config));
+      assert.strictEqual(par.tipo, 'par');
+      assert.strictEqual(par.selfiesPares, 1);
+      assert.strictEqual(par.tentativasRestantes, null, '∞ permanece sem número');
+      assert.strictEqual(partida.estado().derrota, false);
+    });
+
+    await test('Modo Pontuação permanece sem orçamento, derrota ou bônus', async () => {
+      const config = criarConfigExpandida('facil', criarRng(3));
+      const partida = criarPartida(config);
+      assert.strictEqual(partida.estado().modalidade, 'pontuacao');
+      assert.strictEqual(partida.estado().tentativasRestantes, null);
+      assert.strictEqual(partida.estado().derrota, false);
+
+      const erro = resolverPar(partida, idsDiferentes(config));
+      assert.strictEqual(erro.tipo, 'erro');
+      assert.strictEqual(erro.tentativasRestantes, null);
+      assert.strictEqual(erro.derrota, false);
+      assert.strictEqual(erro.bonusSelfies, 0);
+      assert.strictEqual(partida.estatisticas, undefined);
+    });
+
+    await test('vitória termina normalmente antes de esgotar as tentativas', async () => {
+      const config = configTentativas('facil');
+      const partida = criarPartida(config);
+      const simbolos = [...new Set(config.cartas.map((carta) => carta.simbolo))];
+      let resultado = null;
+      for (const simbolo of simbolos) {
+        resultado = resolverPar(partida, idsIguais(config, simbolo));
+      }
+      assert.strictEqual(resultado.tipo, 'concluido');
+      assert.strictEqual(resultado.derrota, false);
+      assert.strictEqual(resultado.progresso.pares, config.totalPares);
+      assert.strictEqual(resultado.tentativasRestantes, 14, 'sem erros, nenhuma tentativa gasta');
+    });
+
+    await test('ehSelfie reconhece o campo explícito e o prefixo do símbolo', async () => {
+      assert.strictEqual(ehSelfie({ selfie: true, simbolo: 'cogumelo' }), true);
+      assert.strictEqual(ehSelfie({ simbolo: 'selfie-12' }), true);
+      assert.strictEqual(ehSelfie({ selfie: false, simbolo: 'flor' }), false);
+      assert.strictEqual(ehSelfie(null), false);
+    });
+  });
+}
+
+async function grupoSelfies() {
+  await grupo('Card Match — Cartas Selfie no baralho', async () => {
+    await test('selfies substituem pares sem alterar total de cartas ou pares', async () => {
+      const selfies = [
+        { id: 1, nome: 'A', imagem: 'data:image/jpeg;base64,QUJD' },
+        { id: 2, nome: 'B', imagem: 'data:image/jpeg;base64,REVG' },
+        { id: 3, nome: 'C', imagem: 'data:image/jpeg;base64,R0hJ' }
+      ];
+      const paresBase = gerarParesExpandido(15);
+      const pares = gerarParesExpandido(15, criarRng(1), selfies);
+
+      assert.strictEqual(pares.length, paresBase.length);
+      assert.strictEqual(new Set(pares.map((par) => par.id)).size, 15);
+      assert.deepEqual(pares.filter((par) => par.selfie).map((par) => par.id).sort(),
+        ['selfie-1', 'selfie-2', 'selfie-3']);
+      assert.ok(pares.every((par) => par.imagem || par.glyph));
+      assert.strictEqual(gerarParesExpandido(15, criarRng(1), []).some((par) => par.selfie), false);
+    });
+
+    await test('distribuição é aleatória e cada selfie aparece exatamente duas vezes', async () => {
+      const selfies = [{ id: 9, nome: 'Eu', imagem: 'data:image/jpeg;base64,QUJD' }];
+      const posicoes = [];
+      for (const semente of [1, 2, 3]) {
+        const config = configTentativas('facil', { selfies, semente });
+        const cartasSelfie = config.cartas.filter((carta) => carta.selfie);
+        assert.strictEqual(cartasSelfie.length, 2);
+        assert.strictEqual(cartasSelfie[0].simbolo, cartasSelfie[1].simbolo);
+        posicoes.push(cartasSelfie.map((carta) => carta.id).join(','));
+      }
+      assert.ok(new Set(posicoes).size > 1, 'novas partidas devem redistribuir as selfies');
+    });
+
+    await test('configuração preserva as cinco dificuldades com selfies ativas', async () => {
+      const selfies = [
+        { id: 1, nome: 'A', imagem: 'data:image/jpeg;base64,QUJD' },
+        { id: 2, nome: 'B', imagem: 'data:image/jpeg;base64,REVG' }
+      ];
+      for (const chave of PROGRESSAO_CARTAS) {
+        const diff = DIFICULDADES_CARTAS_EXPANDIDO[chave];
+        const config = criarConfigExpandida(chave, criarRng(4), {
+          selfies,
+          modalidade: 'tentativas',
+          cheat: calcularTentativasIniciais(chave)
+        });
+        assert.strictEqual(config.cartas.length, diff.cartas);
+        assert.strictEqual(config.totalCartas, diff.cartas);
+        assert.strictEqual(config.totalPares, diff.pares);
+        assert.strictEqual(config.cartas.filter((carta) => carta.selfie).length, 4);
+        assert.strictEqual(config.modalidade, 'tentativas');
+        assert.strictEqual(config.tentativasIniciais, TENTATIVAS_INICIAIS[chave]);
+        assert.strictEqual(config.selfiesPares, 2);
+      }
+    });
+
+    await test('excesso de selfies nunca aumenta o tabuleiro', async () => {
+      const selfies = Array.from({ length: 80 }, (_, indice) => ({
+        id: indice + 1, nome: `S${indice + 1}`, imagem: 'data:image/jpeg;base64,QUJD'
+      }));
+      const config = criarConfigExpandida('facil', criarRng(6), { selfies });
+      assert.strictEqual(config.cartas.length, DIFICULDADES_CARTAS_EXPANDIDO.facil.cartas);
+      assert.strictEqual(config.cartas.filter((carta) => carta.selfie).length,
+        DIFICULDADES_CARTAS_EXPANDIDO.facil.pares * 2);
+      assert.strictEqual(new Set(config.cartas.map((carta) => carta.simbolo)).size,
+        config.totalPares);
+    });
+
+    await test('enquadramento é normalizado e limitado', async () => {
+      assert.deepEqual(normalizarEnquadramento(), ENQUADRAMENTO_PADRAO);
+      assert.deepEqual(normalizarEnquadramento({ zoom: 9, y: -9 }), { zoom: 2.5, y: -0.5 });
+      assert.deepEqual(normalizarEnquadramento({ zoom: 0, y: 9 }), { zoom: 1, y: 0.5 });
+      assert.deepEqual(normalizarEnquadramento({ zoom: 'abc', y: null }), ENQUADRAMENTO_PADRAO);
+    });
+
+    await test('processamento gera JPEG 320×426 com recorte 3:4', async () => {
+      const cenario = criarCenarioImagem();
+      try {
+        const processada = await processarImagem('data:image/jpeg;base64,QUJD');
+        assert.strictEqual(processada.largura, TAMANHO_CARTA.largura);
+        assert.strictEqual(processada.altura, TAMANHO_CARTA.altura);
+        assert.strictEqual(processada.imagem, 'data:image/jpeg;base64,QUJD');
+        assert.strictEqual(processada.tamanhoBytes, 3);
+        assert.strictEqual(MIME_SAIDA, 'image/jpeg');
+        assert.strictEqual(QUALIDADE_SAIDA, 0.82);
+        assert.strictEqual(cenario.desenhos.length, 1);
+        const [, , , corteLargura, corteAltura, , , destLargura, destAltura] = cenario.desenhos[0];
+        assert.ok(Math.abs((corteLargura / corteAltura) - (320 / 426)) < 0.001);
+        assert.strictEqual(destLargura, 320);
+        assert.strictEqual(destAltura, 426);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('CRUD de selfies cria, ativa, desativa, substitui e exclui', async () => {
+      await resetDB();
+      await openDatabase();
+      const cenario = criarCenarioImagem();
+      const arquivo = arquivoImagemFake();
+      try {
+        const salva = await criarSelfie({ arquivo, nome: 'Minha selfie' });
+        assert.ok(Number.isInteger(salva.id));
+        assert.strictEqual(salva.nome, 'Minha selfie');
+        assert.strictEqual(salva.ativa, true);
+        assert.strictEqual(salva.largura, 320);
+        assert.strictEqual(salva.altura, 426);
+
+        assert.strictEqual((await listarSelfies()).length, 1);
+        const desativada = await definirSelfieAtiva(salva.id, false);
+        assert.strictEqual(desativada.ativa, false);
+        assert.strictEqual((await listarSelfies()).length, 1, 'desativar não apaga');
+        await definirSelfieAtiva(salva.id, true);
+
+        const substituida = await substituirSelfie(salva.id, {
+          arquivo, nome: 'Nova foto', enquadramento: { zoom: 1.4, y: 0.2 }
+        });
+        assert.strictEqual(substituida.id, salva.id);
+        assert.strictEqual(substituida.criadoEm, salva.criadoEm);
+        assert.strictEqual(substituida.nome, 'Nova foto');
+        assert.strictEqual(substituida.ativa, true);
+
+        await excluirSelfie(salva.id);
+        assert.strictEqual(await obterSelfie(salva.id), undefined);
+        assert.strictEqual((await listarSelfies()).length, 0);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('leitura de arquivo rejeita tipo inválido e imagem grande demais', async () => {
+      const cenario = criarCenarioImagem();
+      try {
+        await assert.rejects(
+          () => lerArquivoComoDataUrl({ type: 'text/plain', size: 1 }),
+          /arquivo de imagem válido/
+        );
+        await assert.rejects(
+          () => lerArquivoComoDataUrl({ type: 'image/jpeg', size: TAMANHO_MAXIMO_ARQUIVO + 1 }),
+          /20 MB/
+        );
+        const lido = await lerArquivoComoDataUrl(arquivoImagemFake());
+        assert.strictEqual(lido, 'data:image/jpeg;base64,QUJD');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+  });
+}
+
+async function grupoPreferenciasEStats() {
+  await grupo('Card Match — preferências e estatísticas por modalidade', async () => {
+    await test('preferências novas têm padrões seguros em instalação antiga', async () => {
+      await resetDB();
+      await openDatabase();
+      const p = await obterPreferenciasCartas();
+      assert.strictEqual(p.modalidadeCartas, MODALIDADE_PADRAO);
+      assert.strictEqual(MODALIDADE_PADRAO, MODALIDADES_CARTAS.PONTUACAO);
+      assert.strictEqual(p.cheatInfinitasCartas, false);
+      assert.strictEqual(p.cheatPersonalizadaCartas, false);
+      assert.strictEqual(p.cheatQuantidadeCartas, QUANTIDADE_CHEAT_PADRAO);
+      assert.strictEqual(p.fxCartasAtivo, true);
+      assert.strictEqual(p.bgmCartasAtiva, true);
+      assert.deepEqual(p.selfiesAtivas, []);
+    });
+
+    await test('normalizadores aceitam apenas valores válidos', async () => {
+      assert.strictEqual(normalizarModalidadeCartas('tentativas'), 'tentativas');
+      assert.strictEqual(normalizarModalidadeCartas('pontuacao'), 'pontuacao');
+      assert.strictEqual(normalizarModalidadeCartas('qualquer'), MODALIDADE_PADRAO);
+      assert.strictEqual(normalizarBooleano('sim', true), true);
+      assert.strictEqual(normalizarBooleano(false, true), false);
+      assert.strictEqual(normalizarQuantidadeCheat(0), 1);
+      assert.strictEqual(normalizarQuantidadeCheat(10000), 999);
+      assert.strictEqual(normalizarQuantidadeCheat(null), QUANTIDADE_CHEAT_PADRAO);
+      assert.deepEqual(normalizarSelfiesAtivas([1, '2', 2, -1, null, 3.5]), [1, 2]);
+    });
+
+    await test('salvar preferências preserva campos antigos e não cria store paralela', async () => {
+      await resetDB();
+      await openDatabase();
+      const atualizado = await salvarPreferenciasCartas({
+        modalidadeCartas: 'tentativas',
+        cheatPersonalizadaCartas: true,
+        cheatQuantidadeCartas: 7,
+        bgmCartasAtiva: false,
+        selfiesAtivas: [4, 4, 5],
+        visualizacaoCartas: 'fixa'
+      });
+      assert.strictEqual(atualizado.modalidadeCartas, 'tentativas');
+      assert.strictEqual(atualizado.cheatQuantidadeCartas, 7);
+      assert.strictEqual(atualizado.bgmCartasAtiva, false);
+      assert.deepEqual(atualizado.selfiesAtivas, [4, 5]);
+      assert.strictEqual(atualizado.dificuldadeCartas, 'normal', 'campo antigo preservado');
+      assert.strictEqual(atualizado.som, true);
+
+      const registros = await getAll('settings');
+      assert.strictEqual(registros.length, 1);
+      assert.strictEqual(await obterModalidadeCartas(), 'tentativas');
+      assert.deepEqual(await obterAudioCartas(), { fx: true, bgm: false });
+      assert.deepEqual(await obterSelfiesAtivas(), [4, 5]);
+
+      await salvarModalidadeCartas('pontuacao');
+      await salvarAudioCartas({ fx: false, bgm: true });
+      await salvarSelfiesAtivas([9]);
+      assert.strictEqual(await obterModalidadeCartas(), 'pontuacao');
+      assert.deepEqual(await obterAudioCartas(), { fx: false, bgm: true });
+      assert.deepEqual(await obterSelfiesAtivas(), [9]);
+    });
+
+    await test('estatísticas antigas não são interpretadas como Modo Tentativas', async () => {
+      await resetDB();
+      await openDatabase();
+      await registrarPartida({
+        modo: 'expandido', concluida: true, vitoria: true,
+        totalCartas: 18, totalPares: 9, paresEncontrados: 9,
+        tentativas: 9, erros: 0, playedAt: 1000
+      });
+      const registro = (await listarPartidas())[0];
+      assert.strictEqual(registro.modalidade, null);
+      assert.strictEqual(registro.cheat, 'normal');
+
+      const stats = await obterEstatisticas();
+      assert.strictEqual(stats.porModalidade.semModalidade, 1);
+      assert.strictEqual(stats.porModalidade.tentativas, 0);
+      assert.strictEqual(stats.porCheat.normal, 1);
+    });
+
+    await test('estatísticas separam modalidade, CHEAT, derrotas e bônus de selfie', async () => {
+      await resetDB();
+      await openDatabase();
+      await registrarPartida({
+        modo: 'expandido', modalidade: 'pontuacao', concluida: true, vitoria: true,
+        totalCartas: 18, totalPares: 9, paresEncontrados: 9, playedAt: 1000
+      });
+      await registrarPartida({
+        modo: 'expandido', modalidade: 'tentativas', cheat: 'infinitas',
+        concluida: true, vitoria: true, totalCartas: 18, totalPares: 9,
+        paresEncontrados: 9, selfiesPares: 2, bonusSelfies: 4,
+        tentativasRestantes: null, playedAt: 2000
+      });
+      await registrarPartida({
+        modo: 'expandido', modalidade: 'tentativas', cheat: 'personalizada',
+        concluida: true, vitoria: false, totalCartas: 18, totalPares: 9,
+        paresEncontrados: 4, tentativasRestantes: 0, playedAt: 3000
+      });
+
+      const stats = await obterEstatisticas();
+      assert.strictEqual(stats.partidas, 3);
+      assert.strictEqual(stats.porModalidade.pontuacao, 1);
+      assert.strictEqual(stats.porModalidade.tentativas, 2);
+      assert.strictEqual(stats.porModalidade.semModalidade, 0);
+      assert.strictEqual(stats.porCheat.normal, 1);
+      assert.strictEqual(stats.porCheat.infinitas, 1);
+      assert.strictEqual(stats.porCheat.personalizada, 1);
+      assert.strictEqual(stats.derrotas, 1);
+      assert.strictEqual(stats.selfiesPares, 2);
+      assert.strictEqual(stats.bonusSelfies, 4);
+      const derrota = (await listarPartidas()).find((p) => p.cheat === 'personalizada');
+      assert.strictEqual(derrota.tentativasRestantes, 0);
+    });
+  });
+}
+
+async function grupoBancoV2() {
+  await grupo('Banco v2 e compatibilidade de backup', async () => {
+    await test('versão 2 adiciona store de selfies sem recriar as demais', async () => {
+      await resetDB();
+      const db = await openDatabase();
+      assert.strictEqual(DB_VERSION, 2);
+      assert.strictEqual(DB_VERSION_ATUAL, 2);
+      assert.ok(STORES.includes('selfies'));
+      assert.strictEqual(db.version, 2);
+      assert.strictEqual(db.objectStoreNames.contains('selfies'), true);
+
+      const loja = db._stores.get('selfies');
+      assert.strictEqual(loja._indexes.has('createdAt'), true);
+      assert.strictEqual(loja._indexes.has('ativa'), true);
+
+      // Seed aditivo: exatamente um registro nas stores antigas.
+      assert.strictEqual((await getAll('profile')).length, 1);
+      assert.strictEqual((await getAll('wallet')).length, 1);
+      assert.strictEqual((await getAll('settings')).length, 1);
+      const metadata = await getAll('metadata');
+      assert.strictEqual(metadata[0].versaoBanco, 2);
+    });
+
+    await test('exportação inclui selfies e restauração antiga preserva a store', async () => {
+      await resetDB();
+      await openDatabase();
+      const id = await put('selfies', {
+        nome: 'Guardada', imagem: 'data:image/jpeg;base64,QUJD',
+        largura: 320, altura: 426, criadoEm: 1000, ativa: true
+      });
+      const backup = await exportarProgresso();
+      assert.ok(Array.isArray(backup.stores.selfies));
+      assert.strictEqual(backup.stores.selfies.length, 1);
+
+      const backupAntigo = {
+        formato: FORMATO_VERSION,
+        versaoBanco: 1,
+        geradoEm: Date.now(),
+        stores: {
+          profile: [], wallet: [{ saldo: 42 }], transactions: [], games: [],
+          matches: [], inventory: [], achievements: [], settings: [], metadata: []
+        }
+      };
+      const validacao = validarEstrutura(backupAntigo);
+      assert.strictEqual(validacao.valido, true, validacao.erros.join(', '));
+      const resultado = await importarProgresso(backupAntigo);
+      assert.strictEqual(resultado.ok, true);
+      const selfie = await get('selfies', id);
+      assert.ok(selfie, 'backup v1 não pode apagar selfies existentes');
+      assert.strictEqual(selfie.nome, 'Guardada');
+      const preservada = resultado.resumo.find((item) => item.store === 'selfies');
+      assert.strictEqual(preservada.preservada, true);
+    });
+  });
+}
+
+/** Image/FileReader/canvas mínimos para exercitar o processamento no Node. */
+function criarCenarioImagem() {
+  const anterior = {
+    document: globalThis.document,
+    Image: globalThis.Image,
+    FileReader: globalThis.FileReader
+  };
+  const desenhos = [];
+
+  globalThis.Image = class ImageFake {
+    constructor() {
+      this.naturalWidth = 640;
+      this.naturalHeight = 480;
+    }
+    set src(valor) {
+      this._src = valor;
+      setTimeout(() => this.onload?.(), 0);
+    }
+    get src() { return this._src; }
+  };
+
+  globalThis.FileReader = class FileReaderFake {
+    readAsDataURL(arquivo) {
+      this.result = arquivo.conteudo;
+      setTimeout(() => this.onload?.({ target: this }), 0);
+    }
+  };
+
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        imageSmoothingEnabled: false,
+        drawImage(...args) { desenhos.push(args); }
+      };
+    },
+    toDataURL() { return 'data:image/jpeg;base64,QUJD'; }
+  };
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? canvas : new MockNode(tag))
+  };
+
+  return {
+    desenhos,
+    restaurar() {
+      globalThis.document = anterior.document;
+      globalThis.Image = anterior.Image;
+      globalThis.FileReader = anterior.FileReader;
+    }
+  };
+}
+
+function arquivoImagemFake() {
+  return {
+    type: 'image/jpeg',
+    size: 2048,
+    conteudo: 'data:image/jpeg;base64,QUJD'
+  };
+}
+
+/** AudioContext falso: registra cada oscilador para provar independência FX/BGM. */
+function criarAudioFake(registros) {
+  return class AudioContextFake {
+    constructor() {
+      this.state = 'running';
+      this.currentTime = 0;
+      this.destination = {};
+      this._volume = 0;
+    }
+    createOscillator() {
+      const contexto = this;
+      return {
+        type: 'square',
+        frequency: { value: 0 },
+        connect() {},
+        start() {
+          registros.push({
+            tipo: this.type,
+            frequencia: this.frequency.value,
+            volume: contexto._volume
+          });
+        },
+        stop() {}
+      };
+    }
+    createGain() {
+      const contexto = this;
+      return {
+        gain: {
+          setValueAtTime(valor) { contexto._volume = valor; },
+          exponentialRampToValueAtTime() {}
+        },
+        connect() {}
+      };
+    }
+    resume() {}
+  };
+}
+
+/** Renderer com AudioContext, setInterval e DOM controlados pelos testes. */
+function criarCenarioRendererNovo(callbacks = {}, opcoes = {}) {
+  const raiz = new MockNode('div');
+  const anterior = {
+    document: globalThis.document,
+    window: globalThis.window,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+    FileReader: globalThis.FileReader
+  };
+  const intervalos = [];
+  const ag = criarAgendadorFake();
+  globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+  const janela = new MockNode('window');
+  janela.confirm = () => true;
+  janela.AudioContext = opcoes.AudioContext || null;
+  globalThis.window = janela;
+  globalThis.setInterval = (fn, ms) => {
+    const item = { fn, ms, cancelado: false };
+    intervalos.push(item);
+    return item;
+  };
+  globalThis.clearInterval = (id) => {
+    if (id && typeof id === 'object') id.cancelado = true;
+  };
+
+  const renderer = criarRenderer(raiz, callbacks, {
+    setTimeout: ag.setTimeoutFake.bind(ag),
+    clearTimeout: ag.clearTimeoutFake.bind(ag)
+  });
+  return {
+    raiz,
+    renderer,
+    intervalos,
+    ag,
+    restaurar() {
+      renderer.destruir();
+      globalThis.document = anterior.document;
+      globalThis.window = anterior.window;
+      globalThis.setInterval = anterior.setInterval;
+      globalThis.clearInterval = anterior.clearInterval;
+      globalThis.FileReader = anterior.FileReader;
+    }
+  };
+}
+
+async function grupoAudioEInterface() {
+  await grupo('Card Match — áudio independente e nova interface', async () => {
+    await test('FX e BGM são independentes e BGM não reinicia ao mudar só FX', async () => {
+      const registros = [];
+      const cenario = criarCenarioRendererNovo({}, { AudioContext: criarAudioFake(registros) });
+      try {
+        const renderer = cenario.renderer;
+        assert.deepEqual(renderer.definirAudio({ fx: false, bgm: true }), { fx: false, bgm: true });
+        assert.strictEqual(cenario.intervalos.length, 1);
+
+        renderer.som('mover');
+        assert.strictEqual(registros.length, 0, 'FX desligado não toca efeitos');
+        cenario.intervalos[0].fn();
+        assert.strictEqual(registros.length, 1, 'BGM toca mesmo com FX desligado');
+        assert.strictEqual(registros[0].tipo, 'triangle');
+        // Base 0.05 × volume padrão da BGM (65%) = 0.0325.
+        assert.ok(Math.abs(registros[0].volume - 0.0325) < 1e-9,
+          `volume inesperado da BGM: ${registros[0].volume}`);
+
+        renderer.definirAudio({ fx: false, bgm: true });
+        renderer.definirAudio({ fx: true, bgm: true });
+        assert.strictEqual(cenario.intervalos.length, 1, 'mesmo valor de BGM não recria o intervalo');
+
+        renderer.som('mover');
+        assert.strictEqual(registros.length, 2);
+        assert.strictEqual(registros[1].frequencia, 280);
+        assert.strictEqual(registros[1].tipo, 'square');
+
+        renderer.definirAudio({ fx: true, bgm: false });
+        assert.strictEqual(cenario.intervalos[0].cancelado, true);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('menu do Expandido expõe modalidade, CHEAT, áudio e galeria', async () => {
+      const eventos = [];
+      const cenario = criarCenarioRendererNovo({
+        onTrocarModalidade: (valor) => eventos.push(`modalidade:${valor}`),
+        onAlternarCheatInfinitas: () => eventos.push('infinitas'),
+        onAlternarCheatPersonalizada: () => eventos.push('personalizada'),
+        onAlterarQuantidadeCheat: (valor) => eventos.push(`quantidade:${valor}`),
+        onAlternarAudio: (chave, ativo) => eventos.push(`audio:${chave}:${ativo}`),
+        onAbrirSelfies: () => eventos.push('galeria')
+      });
+      try {
+        cenario.renderer.mostrarMenu({
+          modo: 'expandido',
+          modalidade: 'tentativas',
+          cheat: { infinitas: false, personalizada: true, quantidade: 7 },
+          audioPreferencias: { fx: true, bgm: true },
+          selfies: [{ id: 1, nome: 'Eu', imagem: 'data:image/jpeg;base64,QUJD' }],
+          selfiesAtivas: [1],
+          estatisticas: {
+            partidas: 3, concluidas: 2,
+            porModo: { classico: 1, expandido: 2 }
+          },
+          estatisticasModalidade: { pontuacao: 1, tentativas: 2 },
+          dificuldades: PROGRESSAO_CARTAS,
+          nomesDificuldade: Object.fromEntries(
+            PROGRESSAO_CARTAS.map((chave) => [chave, DIFICULDADES_CARTAS_EXPANDIDO[chave].label])
+          )
+        });
+
+        const no = (predicado) => encontrarNo(cenario.raiz, predicado);
+        assert.ok(no((item) => item.dataset?.modalidade === 'tentativas'));
+        assert.ok(no((item) => item.dataset?.cheat === 'infinitas'));
+        assert.ok(no((item) => item.dataset?.cheat === 'personalizada'));
+        assert.strictEqual(
+          no((item) => item.dataset?.cheatQuantidade === 'true')?.value, '7');
+        assert.ok(no((item) => item.dataset?.audio === 'fx'));
+        assert.ok(no((item) => item.dataset?.audio === 'bgm'));
+        assert.ok(no((item) => item.dataset?.acao === 'minhas-cartas'));
+        const textoStats = percorrerNo(no((item) => item.className === 'cards__stats'))
+          .map((item) => item.textContent).join(' ');
+        assert.match(textoStats, /Tentativas: 2/);
+
+        no((item) => item.dataset?.modalidade === 'tentativas').click();
+        no((item) => item.dataset?.cheat === 'infinitas').click();
+        no((item) => item.dataset?.cheat === 'personalizada').click();
+        no((item) => item.dataset?.acao === 'minhas-cartas').click();
+        const campo = no((item) => item.dataset?.cheatQuantidade === 'true');
+        campo.value = '11';
+        campo.dispatch('change');
+        const bgm = no((item) => item.dataset?.audio === 'bgm');
+        bgm.click();
+
+        assert.deepEqual(eventos, [
+          'modalidade:tentativas', 'infinitas', 'personalizada', 'galeria',
+          'quantidade:11', 'audio:bgm:false'
+        ]);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('resultado não duplica o som já tocado nos callbacks', async () => {
+      const registros = [];
+      const cenario = criarCenarioRendererNovo({}, { AudioContext: criarAudioFake(registros) });
+      try {
+        const cfg = configTentativas('facil');
+        cenario.renderer.mostrarPartida(cfg, criarPartida(cfg).estado());
+        const antes = registros.length;
+
+        cenario.renderer.mostrarResultado({
+          titulo: 'FIM DAS TENTATIVAS', modo: 'expandido', botoes: [],
+          somVitoria: false, tocarSom: false
+        });
+        assert.strictEqual(registros.length, antes, 'tocarSom:false não toca nada');
+
+        cenario.renderer.mostrarResultado({
+          titulo: 'DESAFIO CONCLUÍDO!', modo: 'expandido', botoes: [],
+          somVitoria: true, tocarSom: false
+        });
+        assert.strictEqual(registros.length, antes, 'som de vitória fica só no callback');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('HUD mostra contador de tentativas ou infinito', async () => {
+      const cenario = criarCenarioRendererNovo();
+      try {
+        const config = configTentativas('facil');
+        cenario.renderer.mostrarPartida(config, criarPartida(config).estado());
+        const hud = encontrarNo(cenario.raiz, (item) => item.dataset?.hud === 'tentativas');
+        assert.strictEqual(hud.textContent, 'TENTATIVAS: 14');
+        assert.strictEqual(hud.className.includes('cards__hud-item--tentativas'), true);
+
+        const infinitas = configTentativas('facil', { cheat: { infinitas: true } });
+        cenario.renderer.mostrarPartida(infinitas, criarPartida(infinitas).estado());
+        const hudInfinito = encontrarNo(cenario.raiz, (item) => item.dataset?.hud === 'tentativas');
+        assert.strictEqual(hudInfinito.textContent, 'TENTATIVAS: ∞');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('galeria oferece câmera/galeria e dispara ações com confirmação', async () => {
+      const eventos = [];
+      const cenario = criarCenarioRendererNovo({
+        onAlternarSelfie: (id, ativa) => eventos.push(`alternar:${id}:${ativa}`),
+        onExcluirSelfie: (id) => eventos.push(`excluir:${id}`),
+        onSubstituirSelfie: (selfie) => eventos.push(`substituir:${selfie.id}`),
+        onVoltarSelfies: () => eventos.push('voltar')
+      });
+      try {
+        cenario.renderer.mostrarSelfies({
+          selfies: [{ id: 3, nome: 'Eu', imagem: 'data:image/jpeg;base64,QUJD' }],
+          ativas: []
+        });
+        const arquivos = percorrerNo(cenario.raiz).filter((item) => item.tagName === 'INPUT');
+        assert.strictEqual(arquivos.length, 2);
+        assert.ok(arquivos.every((item) => item.type === 'file' && item.accept === 'image/*'));
+        assert.ok(arquivos.some((item) => item.getAttribute('capture')));
+
+        const acao = (nome) => encontrarNo(cenario.raiz, (item) => item.dataset?.selfieAcao === nome);
+        acao('alternar').click();
+        acao('excluir').click();
+        acao('substituir').click();
+        encontrarNo(cenario.raiz, (item) => item.textContent === '← Voltar às configurações').click();
+        assert.deepEqual(eventos, ['alternar:3:true', 'excluir:3', 'substituir:3', 'voltar']);
+        assert.ok(encontrarNo(cenario.raiz, (item) => item.className?.includes?.('cards__selfie-img')));
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('câmera prefere frontal, galeria mantém importação e cancelar não altera selfies', async () => {
+      const eventos = [];
+      const cenario = criarCenarioRendererNovo({
+        onNovaSelfie: ({ origem }) => eventos.push(`nova:${origem}`)
+      });
+      try {
+        cenario.renderer.mostrarSelfies({
+          selfies: [{ id: 7, nome: 'Guardada', imagem: 'data:image/jpeg;base64,QUJD' }],
+          ativas: [7]
+        });
+        const inputs = percorrerNo(cenario.raiz)
+          .filter((item) => item.tagName === 'INPUT' && item.type === 'file');
+        const camera = inputs.find((item) => item.getAttribute('aria-label') === '📷 Tirar foto');
+        const galeria = inputs.find((item) => item.getAttribute('aria-label') === '🖼️ Escolher da galeria');
+        assert.strictEqual(camera.getAttribute('capture'), 'user', 'frontal é a preferência');
+        assert.strictEqual(galeria.getAttribute('capture'), undefined, 'galeria segue sem capture');
+        assert.ok(inputs.every((item) => item.accept === 'image/*' && item.parentNode));
+
+        const miniatura = encontrarNo(cenario.raiz,
+          (item) => item.className?.includes?.('cards__selfie-img'));
+        assert.ok(miniatura, 'selfie já salva continua visível');
+
+        camera.dispatch('cancel');
+        camera.dispatch('change');
+        assert.deepEqual(eventos, [], 'cancelar ou change vazio não abrem editor nem apagam dados');
+        assert.strictEqual(encontrarNo(cenario.raiz,
+          (item) => item.className?.includes?.('cards__selfie-img')), miniatura);
+
+        galeria.files = [arquivoImagemFake()];
+        galeria.dispatch('change');
+        assert.deepEqual(eventos, ['nova:galeria'], 'importação pela galeria continua funcionando');
+
+        camera.files = [arquivoImagemFake()];
+        camera.dispatch('change');
+        assert.deepEqual(eventos, ['nova:galeria', 'nova:camera'], 'captura continua entregando o arquivo');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('editor de selfie gera preview e envia nome/enquadramento ao salvar', async () => {
+      const eventos = [];
+      const cenario = criarCenarioRendererNovo({
+        onSalvarSelfie: (dados) => eventos.push(dados),
+        onVoltarSelfies: () => eventos.push('cancelar')
+      });
+      globalThis.FileReader = class {
+        readAsDataURL() {
+          this.result = 'data:image/jpeg;base64,QUJD';
+          setTimeout(() => this.onload?.({ target: this }), 0);
+        }
+      };
+      try {
+        const arquivo = arquivoImagemFake();
+        cenario.renderer.mostrarEditorSelfie({ arquivo });
+        const no = (predicado) => encontrarNo(cenario.raiz, predicado);
+        const zoom = no((item) => item.dataset?.enquadramento === 'zoom');
+        const y = no((item) => item.dataset?.enquadramento === 'y');
+        const nome = no((item) => item.dataset?.nomeSelfie === 'true');
+        zoom.value = '1.5';
+        y.value = '0.25';
+        nome.value = 'Foto nova';
+        zoom.dispatch('input');
+        y.dispatch('input');
+        const preview = no((item) => item.className === 'cards__editor-preview');
+        assert.strictEqual(preview.style.getPropertyValue('--selfie-zoom'), '1.5');
+        assert.strictEqual(preview.style.getPropertyValue('--selfie-y'), '0.25');
+
+        no((item) => item.textContent === 'Salvar carta').click();
+        assert.strictEqual(eventos.length, 1);
+        assert.strictEqual(eventos[0].nome, 'Foto nova');
+        assert.deepEqual(eventos[0].enquadramento, { zoom: 1.5, y: 0.25 });
+        assert.strictEqual(eventos[0].arquivo, arquivo);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('CSS cobre modalidade, CHEAT, galeria, editor e reduced motion', async () => {
+      const css = readFileSync(new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
+      for (const seletor of [
+        '.cards__bloco', '.cards__modalidade', '.cards__cheat', '.cards__audio-config',
+        '.cards__hud-item--tentativas', '.cards__selfies-grade', '.cards__selfie-item--ativa',
+        '.cards__selfie-miniatura', '.cards__selfie-img', '.cards__selfie-acoes',
+        '.cards__toggle--perigo', '.cards__editor-caixa', '.cards__editor-preview',
+        '.cards__editor-controles', '.cards__carta-selfie'
+      ]) {
+        assert.ok(css.includes(seletor), `seletor ausente: ${seletor}`);
+      }
+      assert.match(css, /\.cards__editor-caixa\s*\{[^}]*aspect-ratio:\s*3\s*\/\s*4/s);
+      assert.match(css, /\.cards__selfie-img\s*\{[^}]*object-fit:\s*cover/s);
+      assert.match(css, /\.cards__editor-preview\s*\{[^}]*--selfie-zoom/s);
+      assert.match(css, /@media\s*\(max-width:\s*560px\)[\s\S]*\.cards__selfies-grade/);
+      assert.match(css, /@media\s*\(max-height:\s*480px\)[\s\S]*\.cards__editor-caixa/);
+      assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\.cards__editor-preview/);
+    });
+  });
+}
+
+// ============================================================================
+// AUDITORIA — DOM REALISTA, MIGRAÇÃO v1→v2, INPUT E SERVICE WORKER
+// ============================================================================
+
+/** Transforma `children` em algo sem `.filter`, como o HTMLCollection do DOM. */
+function comoHtmlCollection(node) {
+  const filhos = node.children;
+  Object.defineProperty(node, 'children', {
+    configurable: true,
+    get() {
+      const colecao = { length: filhos.length };
+      filhos.forEach((filho, indice) => { colecao[indice] = filho; });
+      colecao[Symbol.iterator] = function* iterar() { yield* filhos; };
+      return colecao;
+    },
+    set(valor) {
+      filhos.length = 0;
+      valor.forEach((filho) => filhos.push(filho));
+    }
+  });
+  node.appendChild = (filho) => { filho.parentNode = node; filhos.push(filho); return filho; };
+  node.replaceChildren = (...nos) => {
+    filhos.forEach((filho) => { filho.parentNode = null; });
+    filhos.length = 0;
+    nos.forEach((filho) => { filho.parentNode = node; filhos.push(filho); });
+  };
+  return node;
+}
+
+async function grupoAuditoria() {
+  await grupo('Auditoria — DOM fiel, migração e offline', async () => {
+    await test('fechar ampliação funciona com HTMLCollection (sem .filter)', async () => {
+      const cenario = criarCenarioRendererNovo();
+      comoHtmlCollection(cenario.raiz);
+      try {
+        cenario.renderer.mostrarSelfies({
+          selfies: [{ id: 1, nome: 'Eu', imagem: 'data:image/jpeg;base64,QUJD' }],
+          ativas: []
+        });
+        const ampliar = encontrarNo(cenario.raiz, (no) => no.dataset?.selfieAcao === 'ampliar');
+        assert.ok(ampliar);
+        ampliar.click();
+        assert.ok(encontrarNo(cenario.raiz, (no) => no.dataset?.ampliacaoSelfie === 'true'));
+
+        const overlay = encontrarNo(cenario.raiz, (no) => no.dataset?.ampliacaoSelfie === 'true');
+        cenario.ag.executarTodos();
+        assert.strictEqual(
+          encontrarNo(cenario.raiz, (no) => no.dataset?.ampliacaoSelfie === 'true'),
+          null,
+          'overlay precisa ser removido sem TypeError'
+        );
+        assert.strictEqual(overlay?.parentNode, null);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('listeners de teclado não acumulam entre partidas', async () => {
+      const cenario = criarCenarioRendererNovo();
+      const janela = globalThis.window;
+      const total = () => janela._listeners.get('keydown')?.size || 0;
+      try {
+        const cfg1 = configTentativas('facil');
+        cenario.renderer.mostrarPartida(cfg1, criarPartida(cfg1).estado());
+        assert.strictEqual(total(), 1);
+
+        const cfg2 = configTentativas('facil', { semente: 99 });
+        cenario.renderer.mostrarPartida(cfg2, criarPartida(cfg2).estado());
+        assert.strictEqual(total(), 1, 'nova partida substitui o listener anterior');
+
+        cenario.renderer.mostrarMenu({ modo: 'expandido' });
+        assert.strictEqual(total(), 0, 'voltar ao menu remove o listener da partida');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('erro de selfie aparece na galeria e no editor', async () => {
+      const cenario = criarCenarioRendererNovo();
+      globalThis.FileReader = class {
+        readAsDataURL() {
+          this.result = 'data:image/jpeg;base64,QUJD';
+          setTimeout(() => this.onload?.({ target: this }), 0);
+        }
+      };
+      try {
+        cenario.renderer.mostrarSelfies({ selfies: [], ativas: [] });
+        cenario.renderer.mostrarErroSelfie('Quota excedida');
+        let aviso = encontrarNo(cenario.raiz, (no) => no.dataset?.selfieErro === 'true');
+        assert.ok(aviso, 'aviso deve aparecer na galeria');
+        assert.strictEqual(aviso.textContent, 'Quota excedida');
+
+        cenario.renderer.mostrarEditorSelfie({ arquivo: arquivoImagemFake() });
+        cenario.renderer.mostrarErroSelfie('Imagem inválida');
+        aviso = encontrarNo(cenario.raiz, (no) => no.dataset?.selfieErro === 'true');
+        assert.ok(aviso, 'aviso deve aparecer no editor');
+        assert.strictEqual(aviso.textContent, 'Imagem inválida');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('migração v1 → v2 cria selfies sem reaplicar seed nem apagar dados', async () => {
+      closeDatabase();
+      mockIndexedDB.deleteDatabase('ArcadeCollection');
+      const dbV1 = new IDBDatabase('ArcadeCollection', 1);
+      for (const nome of STORES.filter((item) => item !== 'selfies')) {
+        dbV1.createObjectStore(nome, { keyPath: 'id', autoIncrement: true });
+      }
+      MOCK_DBS.set('ArcadeCollection', dbV1);
+      dbV1._stores.get('profile').add({ id: 1, nome: 'Jogador V1' });
+      dbV1._stores.get('wallet').add({ id: 1, saldo: 55 });
+      dbV1._stores.get('settings').add({ id: 1, som: false, dificuldadePlinko: 'dificil' });
+      dbV1._stores.get('metadata').add({ id: 1, versaoBanco: 1, integridade: 'ok' });
+
+      const db = await openDatabase();
+      assert.strictEqual(db.version, 2);
+      assert.strictEqual(db.objectStoreNames.contains('selfies'), true);
+      assert.strictEqual((await getAll('profile')).length, 1);
+      assert.strictEqual((await getAll('profile'))[0].nome, 'Jogador V1');
+      assert.strictEqual((await getAll('wallet'))[0].saldo, 55);
+      const ajustes = await getAll('settings');
+      assert.strictEqual(ajustes.length, 1);
+      assert.strictEqual(ajustes[0].som, false, 'seed não pode reaplicar sobre dados antigos');
+      const metadata = await getAll('metadata');
+      assert.strictEqual(metadata.length, 1);
+      assert.strictEqual(metadata[0].versaoBanco, 2);
+    });
+
+    await test('service worker usa cache v12 sem os módulos removidos', async () => {
+      const sw = readFileSync(new URL('../service-worker.js', import.meta.url), 'utf8');
+      assert.match(sw, /const CACHE_NAME = 'memory-quest-v12'/);
+      assert.ok(!sw.includes('smb3-original.js'), 'adaptador removido do precache');
+      const lista = sw.match(/const ESSENTIAL_ASSETS = \[([\s\S]*?)\];/)[1];
+      const assets = lista.match(/'\.\/[^']*'/g);
+      assert.strictEqual(assets.length, 26, 'precache contém apenas os 26 assets ativos');
+      assert.ok(!sw.includes("'./src/games/cards/classic.js'"),
+        'módulo legado removido do precache');
+      for (const modulo of [
+        './src/core/selfies.js',
+        './src/core/migrations.js',
+        './src/core/settings.js',
+        './src/core/profile.js',
+        './src/ui/profile.js',
+        './src/core/game-stats.js',
+        './src/games/cards/tentativas.js',
+        './src/games/cards/renderer.js',
+        './src/games/cards/styles.css'
+      ]) {
+        assert.ok(sw.includes(`'${modulo}'`), `ausente no precache: ${modulo}`);
+      }
+    });
+  });
+}
+
+async function grupoIdentidade() {
+  await grupo('Memory Quest — identidade e navegação', async () => {
+    await test('nome visível, título e manifesto usam Memory Quest', async () => {
+      const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+      const manifesto = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+      assert.ok(html.includes('<title>Memory Quest</title>'));
+      assert.ok(html.includes('MEMORY<span class="logo__accent"> QUEST</span>'));
+      assert.ok(html.includes('Instalar Memory Quest'));
+      assert.ok(html.includes('Memory Quest Alpha — local &amp; offline'));
+      assert.strictEqual(manifesto.name, 'Memory Quest');
+      assert.strictEqual(manifesto.short_name, 'Memory Quest');
+      assert.match(manifesto.description, /memória/);
+    });
+
+    await test('navegação principal não oferece Plinko e inclui os cinco destinos', async () => {
+      const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+      const nav = html.slice(html.indexOf('<nav class="nav-bottom"'), html.indexOf('</nav>'));
+      assert.ok(!nav.includes('Plinko'), 'Plinko fora da navegação principal');
+      for (const rotulo of ['Jogar', 'Perfil', 'Minhas Cartas', 'Configurações', 'Estatísticas']) {
+        assert.ok(nav.includes(rotulo), `destino ausente: ${rotulo}`);
+      }
+      assert.ok(nav.includes('data-foco="selfies"'));
+      assert.ok(html.includes('id="area-settings"'));
+      assert.ok(html.includes('id="area-stats"'));
+      assert.ok(html.includes('id="area-plinko"'), 'Plinko preservado no DOM');
+      assert.ok(html.includes('id="area-shop"'), 'Loja preservada no DOM');
+    });
+
+    await test('router preserva áreas legadas e aceita novas áreas', async () => {
+      const fonte = readFileSync(new URL('../src/app/router.js', import.meta.url), 'utf8');
+      for (const area of ['plinko', 'shop', 'cards', 'profile', 'settings', 'stats']) {
+        assert.ok(fonte.includes(`'${area}'`), `área ausente no router: ${area}`);
+      }
+      assert.ok(fonte.includes('getFocoAtual'));
+    });
+
+    await test('painéis adicionais e loja estão integrados ao bootstrap', async () => {
+      const main = readFileSync(new URL('../src/app/main.js', import.meta.url), 'utf8');
+      assert.ok(main.includes('renderizarConfiguracoes'));
+      assert.ok(main.includes('renderizarEstatisticas'));
+      assert.ok(main.includes('cardsAbrirGaleria'));
+      assert.ok(main.includes('btn-abrir-loja'));
+      const cards = readFileSync(new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      assert.ok(cards.includes('export { init, destroy, abrirGaleria }'));
+    });
+  });
+}
+
+async function grupoBotoes() {
+  await grupo('Memory Quest — sistema visual de botões', async () => {
+    const css = () => readFileSync(new URL('../styles/main.css', import.meta.url), 'utf8');
+
+    await test('botões principais têm borda 3D, sombra, pressed, selected e foco', () => {
+      const fonte = css();
+      const bloco = fonte.slice(fonte.indexOf('Memory Quest — sistema visual de botões'));
+      for (const trecho of [
+        '--mq-btn-edge',
+        'box-shadow: 0 4px 0 var(--mq-btn-edge)',
+        'transform: translateY(3px)',
+        ':focus-visible',
+        ':disabled',
+        '[aria-pressed="true"]',
+        '#cards-board .diff-btn.active'
+      ]) {
+        assert.ok(bloco.includes(trecho), `regra ausente: ${trecho}`);
+      }
+      for (const seletor of [
+        '.btn--arcade',
+        '.home__quick .btn',
+        '.mq-panel__opcao',
+        '#cards-board .cards__mode-btn',
+        '#cards-board .diff-btn',
+        '#cards-board .cards__visual-opt',
+        '#cards-board .cards__audio-btn',
+        '#cards-board .cards__toggle'
+      ]) {
+        assert.ok(bloco.includes(seletor), `seletor ausente: ${seletor}`);
+      }
+    });
+
+    await test('estilos de botões cobrem o Jogo da Memória sem resquícios do adaptador', () => {
+      const fonte = css();
+      const bloco = fonte.slice(fonte.indexOf('Memory Quest — sistema visual de botões'));
+      assert.ok(!bloco.includes('.cards__smb3-'),
+        'estilos do adaptador removido não podem reestilizar botões');
+      assert.ok(bloco.includes('Jogo da Memória'),
+        'escopo dos botões deve estar documentado no bloco');
+    });
+
+    await test('alvos de toque e reduced motion são preservados', () => {
+      const fonte = css();
+      const bloco = fonte.slice(fonte.indexOf('Memory Quest — sistema visual de botões'));
+      assert.ok(bloco.includes('min-height: 44px'));
+      assert.ok(bloco.includes('.nav__item'));
+      assert.ok(bloco.includes('min-height: 52px'));
+      assert.ok(fonte.indexOf('@media (prefers-reduced-motion: reduce)') >
+        fonte.indexOf('Memory Quest — sistema visual de botões'));
+    });
+  });
+}
+
+async function grupoVolumes() {
+  await grupo('Memory Quest — volumes independentes de FX e BGM', async () => {
+    await test('normalização aceita zero, limita a faixa e aplica o padrão quando ausente', () => {
+      assert.strictEqual(normalizarVolumeCartas(undefined, VOLUME_FX_PADRAO), 80);
+      assert.strictEqual(normalizarVolumeCartas(null, VOLUME_BGM_PADRAO), 65);
+      assert.strictEqual(normalizarVolumeCartas('', VOLUME_FX_PADRAO), 80);
+      assert.strictEqual(normalizarVolumeCartas('texto', VOLUME_BGM_PADRAO), 65);
+      assert.strictEqual(normalizarVolumeCartas(-10, VOLUME_FX_PADRAO), 0);
+      assert.strictEqual(normalizarVolumeCartas(150, VOLUME_BGM_PADRAO), 100);
+      assert.strictEqual(normalizarVolumeCartas(0, VOLUME_FX_PADRAO), 0, 'zero é válido');
+      assert.strictEqual(normalizarVolumeCartas('42', VOLUME_BGM_PADRAO), 42);
+      assert.strictEqual(normalizarVolumeCartas(37.6, VOLUME_FX_PADRAO), 38);
+    });
+
+    await test('instalação antiga recebe 80/65 na leitura sem gravar no banco', async () => {
+      await resetDB();
+      await openDatabase();
+      await put('settings', { id: 1, som: false, dificuldadePlinko: 'dificil' });
+      const preferencias = await obterPreferenciasCartas();
+      assert.strictEqual(preferencias.volumeFxCartas, 80);
+      assert.strictEqual(preferencias.volumeBgmCartas, 65);
+      assert.strictEqual(preferencias.som, false);
+      assert.strictEqual(preferencias.dificuldadePlinko, 'dificil');
+      const bruto = (await getAll('settings'))[0];
+      assert.strictEqual('volumeFxCartas' in bruto, false, 'leitura não pode migrar silenciosamente');
+      assert.strictEqual('volumeBgmCartas' in bruto, false);
+    });
+
+    await test('salvar um canal preserva o outro e os campos antigos', async () => {
+      const antes = (await getAll('settings'))[0];
+      assert.strictEqual(antes.som, false);
+      assert.deepEqual(await salvarVolumesCartas({ fx: 0 }), { fx: 0, bgm: 65 });
+      const meio = (await getAll('settings'))[0];
+      assert.strictEqual(meio.som, false);
+      assert.strictEqual(meio.dificuldadePlinko, 'dificil');
+      assert.strictEqual(meio.volumeFxCartas, 0);
+      assert.deepEqual(await salvarVolumesCartas({ bgm: 35 }), { fx: 0, bgm: 35 });
+      const depois = (await getAll('settings'))[0];
+      assert.strictEqual(depois.volumeFxCartas, 0);
+      assert.strictEqual(depois.volumeBgmCartas, 35);
+      assert.strictEqual(depois.som, false);
+      assert.deepEqual(await obterVolumesCartas(), { fx: 0, bgm: 35 });
+    });
+
+    await test('volumes entram no backup pela store settings sem mudar o formato', async () => {
+      const backup = await exportarProgresso();
+      assert.strictEqual(backup.formato, '1.0.0');
+      assert.strictEqual(backup.versaoBanco, DB_VERSION);
+      const registro = backup.stores.settings.find((item) => item.id === 1);
+      assert.strictEqual(registro.volumeFxCartas, 0);
+      assert.strictEqual(registro.volumeBgmCartas, 35);
+      assert.strictEqual(registro.som, false);
+    });
+
+    await test('gravações concorrentes dos dois canais não se sobrescrevem', async () => {
+      await resetDB();
+      await openDatabase();
+      await salvarPreferenciasCartas({ volumeFxCartas: 80, volumeBgmCartas: 65 });
+      await Promise.all([
+        salvarVolumesCartas({ fx: 0 }),
+        salvarVolumesCartas({ bgm: 100 })
+      ]);
+      assert.deepEqual(await obterVolumesCartas(), { fx: 0, bgm: 100 });
+      const registro = (await getAll('settings'))[0];
+      assert.strictEqual(registro.volumeFxCartas, 0);
+      assert.strictEqual(registro.volumeBgmCartas, 100);
+    });
+
+    await test('ganho por canal no renderer não reinicia a BGM e zero silencia só o FX', () => {
+      const registros = [];
+      const cenario = criarCenarioRendererNovo({}, { AudioContext: criarAudioFake(registros) });
+      try {
+        const renderer = cenario.renderer;
+        renderer.definirAudio({ fx: true, bgm: true, volumeFx: 80, volumeBgm: 65 });
+        assert.strictEqual(cenario.intervalos.length, 1, 'BGM ligada uma única vez');
+        renderer.som('mover');
+        cenario.intervalos[0].fn();
+        assert.strictEqual(registros.length, 2);
+        assert.ok(Math.abs(registros[0].volume - 0.02) < 1e-9,
+          `FX em 80%: ${registros[0].volume}`);
+        assert.ok(Math.abs(registros[1].volume - 0.0325) < 1e-9,
+          `BGM em 65%: ${registros[1].volume}`);
+
+        const timer = cenario.intervalos[0];
+        renderer.definirAudio({ volumeFx: 0, volumeBgm: 100 });
+        assert.strictEqual(cenario.intervalos[0], timer, 'mudar volume não recria o timer');
+        assert.strictEqual(cenario.intervalos.length, 1);
+        assert.strictEqual(renderer.volumeFx, 0);
+        assert.strictEqual(renderer.volumeBgm, 100);
+
+        registros.length = 0;
+        renderer.som('mover');
+        timer.fn();
+        assert.strictEqual(registros.length, 1, 'FX em zero não toca');
+        assert.ok(Math.abs(registros[0].volume - 0.05) < 1e-9,
+          `BGM em 100%: ${registros[0].volume}`);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('BGM é audível em vários níveis, sem clipping e sem mexer no FX', () => {
+      const esperados = [
+        [0, 0],
+        [25, 0.0125],
+        [50, 0.025],
+        [65, 0.0325],
+        [100, 0.05]
+      ];
+      for (const [volumeBgm, ganhoEsperado] of esperados) {
+        const registros = [];
+        const cenario = criarCenarioRendererNovo({}, { AudioContext: criarAudioFake(registros) });
+        try {
+          const renderer = cenario.renderer;
+          renderer.definirAudio({
+            fx: true, bgm: true, volumeFx: 80, volumeBgm
+          });
+          const timer = cenario.intervalos[0];
+          assert.ok(timer, 'timer da BGM deve existir em todos os níveis');
+
+          registros.length = 0;
+          renderer.som('mover');
+          timer.fn();
+          const fx = registros.find((item) => item.tipo === 'square');
+          const bgm = registros.find((item) => item.tipo === 'triangle');
+          assert.ok(Math.abs(fx.volume - 0.02) < 1e-9,
+            `FX não pode mudar ao ajustar BGM (${volumeBgm}%): ${fx.volume}`);
+          if (ganhoEsperado === 0) {
+            assert.strictEqual(bgm, undefined, 'BGM em zero deve silenciar só a música');
+          } else {
+            assert.ok(Math.abs(bgm.volume - ganhoEsperado) < 1e-9,
+              `BGM em ${volumeBgm}%: ${bgm.volume}`);
+          }
+          for (const item of registros) {
+            assert.ok(item.volume > 0 && item.volume <= 0.08,
+              `ganho fora da faixa segura: ${item.volume}`);
+          }
+          assert.strictEqual(renderer.volumeFx, 80);
+          assert.strictEqual(renderer.volumeBgm, volumeBgm);
+        } finally {
+          cenario.restaurar();
+        }
+      }
+    });
+
+    await test('volumes persistem após fechar e reabrir o banco', async () => {
+      await resetDB();
+      await openDatabase();
+      assert.deepEqual(await salvarVolumesCartas({ fx: 35 }), { fx: 35, bgm: 65 });
+      assert.deepEqual(await salvarVolumesCartas({ bgm: 25 }), { fx: 35, bgm: 25 });
+      closeDatabase(); // simula recarregar a página
+      await openDatabase();
+      assert.deepEqual(await obterVolumesCartas(), { fx: 35, bgm: 25 });
+      const registro = (await getAll('settings'))[0];
+      assert.strictEqual(registro.volumeFxCartas, 35);
+      assert.strictEqual(registro.volumeBgmCartas, 25);
+    });
+
+    await test('sliders do menu do Jogo da Memória refletem e repassam ambos os canais', () => {
+      const eventos = [];
+      const cenario = criarCenarioRendererNovo({
+        onAlterarVolume: (chave, valor) => eventos.push(`${chave}:${valor}`)
+      });
+      try {
+        cenario.renderer.mostrarMenu({
+          modo: 'expandido',
+          modalidade: 'pontuacao',
+          cheat: { infinitas: false, personalizada: false, quantidade: 20 },
+          audioPreferencias: { fx: true, bgm: true, volumeFx: 80, volumeBgm: 65 },
+          selfies: [],
+          selfiesAtivas: []
+        });
+        const sliders = percorrerNo(cenario.raiz).filter((no) => no.dataset?.volume);
+        assert.deepEqual(sliders.map((no) => [no.dataset.volume, no.value]), [
+          ['fx', '80'],
+          ['bgm', '65']
+        ]);
+        sliders[0].value = '0';
+        sliders[0].dispatch('input');
+        sliders[1].value = '100';
+        sliders[1].dispatch('input');
+        assert.deepEqual(eventos, ['fx:0', 'bgm:100']);
+        const rotulos = percorrerNo(cenario.raiz)
+          .filter((no) => no.className === 'cards__volume-rotulo')
+          .map((no) => no.textContent);
+        assert.ok(rotulos.includes('FX: 0%'));
+        assert.ok(rotulos.includes('BGM: 100%'));
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('sliders do painel de Configurações usam os padrões e persistem', async () => {
+      await resetDB();
+      await openDatabase();
+      const anteriorDocumento = globalThis.document;
+      globalThis.document = { createElement: (tag) => new MockNode(tag), activeElement: null };
+      try {
+        const root = new MockNode('div');
+        await renderizarConfiguracoes(root);
+        const sliders = percorrerNo(root).filter((no) => no.dataset?.volume);
+        assert.deepEqual(sliders.map((no) => [no.dataset.volume, no.value]), [
+          ['fx', '80'],
+          ['bgm', '65']
+        ]);
+        sliders[0].value = '45';
+        sliders[0].dispatch('input');
+        // O mock de IndexedDB completa a transação após ~50 ms.
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        assert.deepEqual(await obterVolumesCartas(), { fx: 45, bgm: 65 });
+        const preferencias = await obterPreferenciasCartas();
+        assert.strictEqual(preferencias.fxCartasAtivo, true, 'canal ligado intacto');
+      } finally {
+        globalThis.document = anteriorDocumento;
+      }
+    });
+
+    await test('renderer e painéis não criam store nova nem mudam o DB', () => {
+      const fonte = readFileSync(new URL('../src/core/settings.js', import.meta.url), 'utf8');
+      assert.ok(fonte.includes("getAll('settings')"));
+      assert.ok(fonte.includes("put('settings'"));
+      assert.ok(!fonte.includes('createObjectStore'), 'nenhuma store nova');
+      for (const arquivo of [
+        '../src/core/settings.js',
+        '../src/games/cards/renderer.js',
+        '../src/games/cards/index.js',
+        '../src/ui/panels.js'
+      ]) {
+        const texto = readFileSync(new URL(arquivo, import.meta.url), 'utf8');
+        assert.ok(!/DB_VERSION_ATUAL\s*=/.test(texto), `versão alterada em ${arquivo}`);
+      }
+    });
+  });
+}
+
+async function grupoPerfil() {
+  await grupo('Memory Quest — perfil local e estatísticas reais', async () => {
+    await test('normalizadores protegem nome e avatar', () => {
+      assert.strictEqual(normalizarNomePerfil('  Ana  '), 'Ana');
+      assert.strictEqual(normalizarNomePerfil('   '), 'Jogador');
+      assert.strictEqual(normalizarNomePerfil(null), 'Jogador');
+      assert.strictEqual(normalizarNomePerfil('x'.repeat(100)).length, 60);
+      const avatar = 'data:image/jpeg;base64,QUJD';
+      assert.strictEqual(normalizarAvatarPerfil(avatar), avatar);
+      assert.strictEqual(normalizarAvatarPerfil('javascript:alert(1)'), null);
+      assert.strictEqual(normalizarAvatarPerfil(null), null);
+      assert.strictEqual(normalizarAvatarPerfil('data:image/jpeg;base64,' + 'A'.repeat(3 * 1024 * 1024)), null);
+    });
+
+    await test('leitura do perfil não cria registro nem apaga os padrões', async () => {
+      await resetDB();
+      await openDatabase();
+      const antes = await getAll('profile');
+      assert.strictEqual(antes.length, 1);
+      const perfil = await obterPerfil();
+      assert.strictEqual(perfil.nome, 'Jogador');
+      assert.strictEqual(perfil.avatar, null);
+      assert.strictEqual(perfil.tema, 'retro');
+      assert.strictEqual(perfil.idExterno, null);
+      assert.strictEqual((await getAll('profile')).length, 1);
+    });
+
+    await test('salvar nome e foto preserva campos antigos e não cria store', async () => {
+      await resetDB();
+      await openDatabase();
+      const original = (await getAll('profile'))[0];
+      await put('profile', {
+        ...original,
+        idExterno: 'externo-123',
+        avatar: 'data:image/jpeg;base64,QUJD',
+        tema: 'retro'
+      });
+      await salvarPerfil({ nome: '  Mestre  ' });
+      const meio = (await getAll('profile'))[0];
+      assert.strictEqual(meio.nome, 'Mestre');
+      assert.strictEqual(meio.idExterno, 'externo-123');
+      assert.strictEqual(meio.avatar, 'data:image/jpeg;base64,QUJD');
+      assert.strictEqual(meio.criadoEm, original.criadoEm);
+      assert.strictEqual(meio.id, original.id);
+
+      await salvarPerfil({ avatar: 'data:image/png;base64,iVBORw0K' });
+      const depois = (await getAll('profile'))[0];
+      assert.strictEqual(depois.nome, 'Mestre');
+      assert.strictEqual(depois.avatar, 'data:image/png;base64,iVBORw0K');
+      assert.strictEqual(depois.tema, 'retro');
+      assert.strictEqual((await getAll('profile')).length, 1);
+    });
+
+    await test('mudanças rápidas de nome e foto não se sobrescrevem', async () => {
+      await Promise.all([
+        salvarPerfil({ nome: 'Rápido' }),
+        salvarPerfil({ avatar: 'data:image/jpeg;base64,QUJD' })
+      ]);
+      const registro = (await getAll('profile'))[0];
+      assert.strictEqual(registro.nome, 'Rápido');
+      assert.strictEqual(registro.avatar, 'data:image/jpeg;base64,QUJD');
+    });
+
+    await test('perfil atualizado entra no backup sem mudar o formato', async () => {
+      const backup = await exportarProgresso();
+      assert.strictEqual(backup.formato, '1.0.0');
+      assert.strictEqual(backup.versaoBanco, DB_VERSION);
+      const perfil = backup.stores.profile.find((item) => item.nome === 'Rápido');
+      assert.ok(perfil, 'perfil salvo precisa aparecer na store profile');
+      assert.strictEqual(perfil.avatar, 'data:image/jpeg;base64,QUJD');
+    });
+
+    await test('painel mostra estatísticas reais e sincroniza o cabeçalho legado', async () => {
+      await resetDB();
+      await openDatabase();
+      await registrarPartida({ concluida: true, vitoria: true, tentativas: 4, erros: 1 });
+      await registrarPartida({ concluida: true, vitoria: false, tentativas: 6, erros: 3 });
+      await salvarPerfil({ nome: 'Lenda' });
+
+      const anterior = globalThis.document;
+      const nomeEl = new MockNode('div');
+      nomeEl.className = 'profile__nome';
+      const idEl = new MockNode('div');
+      idEl.className = 'profile__id';
+      const avatarEl = new MockNode('div');
+      avatarEl.className = 'profile__avatar-placeholder';
+      globalThis.document = {
+        createElement: (tag) => new MockNode(tag),
+        activeElement: null,
+        getElementById: (id) => (id === 'profile-nome' ? nomeEl : id === 'profile-id' ? idEl : null),
+        querySelector: (seletor) => (seletor === '.profile__avatar-placeholder' ? avatarEl : null)
+      };
+      try {
+        const root = new MockNode('div');
+        const perfil = await renderizarPerfil(root);
+        assert.strictEqual(perfil.nome, 'Lenda');
+        assert.strictEqual(nomeEl.textContent, 'Lenda');
+        assert.match(idEl.textContent, /^ID: /);
+        assert.strictEqual(avatarEl.textContent, '👤');
+        const texto = percorrerNo(root).map((no) => no.textContent).join(' ');
+        for (const rotulo of ['Partidas', 'Concluídas', 'Vitórias', 'Moedas']) {
+          assert.ok(texto.includes(rotulo), `resumo ausente: ${rotulo}`);
+        }
+        assert.ok(texto.includes('2'), 'duas partidas registradas precisam aparecer');
+      } finally {
+        globalThis.document = anterior;
+      }
+    });
+
+    await test('foto do perfil prefere câmera frontal e mantém a galeria', () => {
+      const fonte = readFileSync(new URL('../src/ui/profile.js', import.meta.url), 'utf8');
+      assert.ok(fonte.includes("input.setAttribute('capture', 'user')"));
+      assert.ok(fonte.includes('Tirar foto'));
+      assert.ok(fonte.includes('Escolher da galeria'));
+      assert.ok(fonte.includes("input.accept = 'image/*'"));
+      assert.ok(fonte.includes('Preferência pela câmera frontal'),
+        'capture=user precisa estar documentado como preferência');
+      const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+      assert.ok(html.includes('id="profile-board"'));
+      assert.ok(html.includes('id="btn-export"'));
+      assert.ok(html.includes('id="btn-import"'));
+    });
+
+    await test('bootstrap e SW integram o perfil sem tocar em backup ou Plinko', () => {
+      const main = readFileSync(new URL('../src/app/main.js', import.meta.url), 'utf8');
+      assert.ok(main.includes("from '../ui/profile.js'"));
+      assert.ok(main.includes('renderizarPerfil(document.getElementById(\'profile-board\'))'));
+      const backup = readFileSync(new URL('../src/core/backup.js', import.meta.url), 'utf8');
+      assert.ok(backup.includes('const FORMATO_VERSION = \'1.0.0\''));
+      assert.ok(!backup.includes('profile.js'), 'backup não depende do painel');
+      const banco = readFileSync(new URL('../src/core/database.js', import.meta.url), 'utf8');
+      assert.ok(!banco.includes('createObjectStore(\'avatar\''), 'nenhuma store de avatar');
+    });
+  });
+}
+
+// ============================================================================
 // EXECUÇÃO
 // ============================================================================
 
 async function main() {
-  process.stdout.write('🧪 Arcade Collection Alpha — Suíte de testes automatizados\n');
+  process.stdout.write('🧪 Memory Quest Alpha — Suíte de testes automatizados\n');
   process.stdout.write('======================================================\n');
 
   await grupoBanco();
@@ -723,7 +3569,20 @@ async function main() {
   await grupoDificuldades();
   await grupoPlinko();
   await grupoBackup();
+  await grupoCardMatch();
+  await grupoVisualizacaoCartas();
+  await grupoModoTentativas();
+  await grupoSelfies();
+  await grupoPreferenciasEStats();
+  await grupoBancoV2();
+  await grupoAudioEInterface();
+  await grupoVolumes();
+  await grupoPerfil();
+  await grupoIdentidade();
+  await grupoBotoes();
+  await grupoAuditoria();
 
+  delete globalThis.window;
   closeDatabase();
 
   process.stdout.write('\n======================================================\n');

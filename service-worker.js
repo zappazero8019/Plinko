@@ -1,10 +1,10 @@
 /**
- * Service Worker — Arcade Collection Alpha
+ * Service Worker — Memory Quest Alpha
  * Estratégia: Cache First para arquivos essenciais, rede com fallback para o restante.
  * Compatível com subdiretórios do GitHub Pages (usando self.registration.scope).
  */
 
-const CACHE_NAME = 'arcade-collection-v1';
+const CACHE_NAME = 'memory-quest-v12';
 const OFFLINE_URL = './index.html';
 
 // Arquivos essenciais para funcionamento offline (caminhos relativos ao escopo do SW)
@@ -15,10 +15,25 @@ const ESSENTIAL_ASSETS = [
   './styles/main.css',
   './src/app/main.js',
   './src/core/database.js',
+  './src/core/migrations.js',
   './src/core/wallet.js',
   './src/core/transactions.js',
   './src/core/backup.js',
+  './src/core/game-stats.js',
+  './src/core/settings.js',
+  './src/core/profile.js',
+  './src/core/selfies.js',
   './src/app/router.js',
+  './src/ui/panels.js',
+  './src/ui/profile.js',
+  './src/games/cards/index.js',
+  './src/games/cards/board.js',
+  './src/games/cards/cards-data.js',
+  './src/games/cards/expanded.js',
+  './src/games/cards/renderer.js',
+  './src/games/cards/difficulty.js',
+  './src/games/cards/tentativas.js',
+  './src/games/cards/styles.css',
   './vendor/matter.min.js'
 ];
 

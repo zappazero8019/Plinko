@@ -4,7 +4,7 @@
  * Responsabilidades:
  *  - Abrir e versionar o banco de dados IndexedDB
  *  - Gerenciar stores independentes: profile, wallet, transactions, games,
- *    matches, inventory, achievements, settings, metadata
+ *    matches, inventory, achievements, settings, metadata, selfies
  *  - Oferecer API de transações atômicas (promissória)
  *  - Controle de versão e migrações
  *  - Verificação de integridade e solicitação de persistência
@@ -13,8 +13,17 @@
  * shop, achievements, etc.) que usam este módulo.
  */
 
+import { DB_VERSION_ATUAL, aplicarMigracoes } from './migrations.js';
+
 const DB_NAME = 'ArcadeCollection';
-const DB_VERSION = 1;
+
+/**
+ * v2 adiciona APENAS a store `selfies` (imagens locais do Card Match).
+ * A migração é aditiva: nenhuma store existente é recriada, limpa ou apagada,
+ * e o seed inicial só roda em bancos realmente novos (oldVersion < 1).
+ * A versão única vive em migrations.js para evitar números divergentes.
+ */
+const DB_VERSION = DB_VERSION_ATUAL;
 
 const STORES = [
   'profile',
@@ -25,7 +34,8 @@ const STORES = [
   'inventory',
   'achievements',
   'settings',
-  'metadata'
+  'metadata',
+  'selfies'
 ];
 
 // Única instância da conexão (singleton)
@@ -70,8 +80,11 @@ function openDatabase() {
 
     request.onupgradeneeded = (event) => {
       const database = request.result;
+      const tx = event.target.transaction; // transação de versão já ativa
       setupStores(database);
-      seedInitialData(database, event.oldVersion);
+      seedInitialData(database, tx, event.oldVersion);
+      // Hook central das migrações (hoje vazio; a store v2 é criada acima).
+      aplicarMigracoes(database, event.oldVersion ?? 0);
     };
   });
 
@@ -110,53 +123,87 @@ function setupStores(database) {
       store.createIndex('itemId', 'itemId', { unique: false });
       store.createIndex('acquiredAt', 'acquiredAt', { unique: false });
     }
+    if (storeName === 'selfies') {
+      store.createIndex('createdAt', 'createdAt', { unique: false });
+      store.createIndex('ativa', 'ativa', { unique: false });
+    }
   });
 }
 
 /**
- * Dados iniciais (seed) executados na primeira criação ou migração.
+ * Dados iniciais (seed) executados SOMENTE na primeira criação do banco.
+ *
+ * Antes da v2 esta função era incondicional, o que duplicaria perfil, carteira,
+ * metadata e settings a cada aumento de versão. A proteção por `oldVersion`
+ * é o que garante a regra "não apagar dados existentes" na migração para a
+ * store de selfies.
  */
-function seedInitialData(database, oldVersion) {
-  const tx = database.transaction(STORES, 'readwrite');
+function seedInitialData(database, tx, oldVersion) {
+  // tx é a transação de mudança de versão já ativa durante onupgradeneeded.
+  // Não criar database.transaction() aqui: o IndexedDB proíbe iniciar
+  // uma transação comum enquanto a version change transaction está em execução.
+  void database;
 
-  // Perfil padrão
-  const profileStore = tx.objectStore('profile');
-  profileStore.add({
-    nome: 'Jogador',
-    idExterno: null,
-    criadoEm: Date.now(),
-    atualizadoEm: Date.now(),
-    avatar: null,
-    tema: 'retro'
-  });
+  // Ambientes de teste/mocks podem omitir `oldVersion`. Nesse caso, a
+  // abertura equivale à criação de um banco novo (versão anterior 0).
+  const versaoAnterior = Number.isFinite(oldVersion) ? oldVersion : 0;
 
-  // Carteira inicial com saldo zero
-  const walletStore = tx.objectStore('wallet');
-  walletStore.add({
-    saldo: 0,
-    totalConquistado: 0,
-    totalGasto: 0,
-    atualizadoEm: Date.now()
-  });
+  if (versaoAnterior < 1) {
+    // Perfil padrão
+    const profileStore = tx.objectStore('profile');
+    profileStore.add({
+      nome: 'Jogador',
+      idExterno: null,
+      criadoEm: Date.now(),
+      atualizadoEm: Date.now(),
+      avatar: null,
+      tema: 'retro'
+    });
 
-  // Metadata do banco
-  const metadataStore = tx.objectStore('metadata');
-  metadataStore.add({
-    versaoBanco: DB_VERSION,
-    criadoEm: Date.now(),
-    atualizadoEm: Date.now(),
-    integridade: 'ok'
-  });
+    // Carteira inicial com saldo zero
+    const walletStore = tx.objectStore('wallet');
+    walletStore.add({
+      saldo: 0,
+      totalConquistado: 0,
+      totalGasto: 0,
+      atualizadoEm: Date.now()
+    });
 
-  // Configurações padrão
-  const settingsStore = tx.objectStore('settings');
-  settingsStore.add({
-    som: true,
-    vibracao: true,
-    dificuldadePlinko: 'normal',
-    dificuldadeCartas: 'normal',
-    cronometroCartas: false
-  });
+    // Metadata do banco
+    const metadataStore = tx.objectStore('metadata');
+    metadataStore.add({
+      versaoBanco: DB_VERSION,
+      criadoEm: Date.now(),
+      atualizadoEm: Date.now(),
+      integridade: 'ok'
+    });
+
+    // Configurações padrão (campos novos entram pelo serviço de preferências,
+    // sem exigir esquema fixo nem reescrita de registros antigos).
+    const settingsStore = tx.objectStore('settings');
+    settingsStore.add({
+      som: true,
+      vibracao: true,
+      dificuldadePlinko: 'normal',
+      dificuldadeCartas: 'normal',
+      cronometroCartas: false
+    });
+  }
+
+  if (versaoAnterior < 2) {
+    // Atualiza apenas o número da versão no metadata já existente.
+    const metadataStore = tx.objectStore('metadata');
+    const consulta = metadataStore.getAll();
+    consulta.onsuccess = () => {
+      for (const atual of consulta.result || []) {
+        metadataStore.put({
+          ...atual,
+          versaoBanco: DB_VERSION,
+          atualizadoEm: Date.now()
+        });
+      }
+    };
+  }
 }
 
 /**

@@ -4,9 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#1a1a2e" />
-  <title>Arcade Collection</title>
+  <meta name="description" content="Memory Quest — jogo de memória retrô com cartas personalizadas, perfil local, estatísticas e funcionamento offline." />
+  <title>Memory Quest</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles/main.css" />
+  <link rel="stylesheet" href="src/games/cards/styles.css" />
   <link rel="preload" as="font" href="assets/fonts/pixel.ttf" />
   <script type="module" src="src/app/main.js"></script>
 </head>
@@ -14,7 +16,7 @@
   <!-- Overlay de instalação PWA -->
   <div id="install-banner" class="install-banner hidden" aria-live="polite">
     <div class="install-banner__content">
-      <strong>Instalar Arcade Collection</strong>
+      <strong>Instalar Memory Quest</strong>
       <button id="install-btn" class="btn btn--arcade">Instalar app</button>
       <button id="install-dismiss" class="btn btn--text">×</button>
     </div>
@@ -22,7 +24,7 @@
 
   <header class="header" aria-label="Cabeçalho">
     <div class="header__brand">
-      <h1 class="logo">ARC<span class="logo__accent">ADE</span> COLLECTION</h1>
+      <h1 class="logo">MEMORY<span class="logo__accent"> QUEST</span></h1>
     </div>
     <div class="header__wallet" aria-label="Carteira virtual">
       <span class="wallet__label">Moedas</span>
@@ -32,25 +34,25 @@
   </header>
 
   <nav class="nav-bottom" aria-label="Navegação principal">
-    <a href="#home" class="nav__item nav__item--active" data-area="home" aria-current="true">
-      <span class="nav__icon">🏠</span>
-      <span class="nav__label">Início</span>
-    </a>
-    <a href="#plinko" class="nav__item" data-area="plinko">
-      <span class="nav__icon">🎯</span>
-      <span class="nav__label">Plinko</span>
-    </a>
     <a href="#cards" class="nav__item" data-area="cards">
       <span class="nav__icon">🃏</span>
-      <span class="nav__label">Cartas</span>
-    </a>
-    <a href="#shop" class="nav__item" data-area="shop">
-      <span class="nav__icon">🛒</span>
-      <span class="nav__label">Loja</span>
+      <span class="nav__label">Jogar</span>
     </a>
     <a href="#profile" class="nav__item" data-area="profile">
       <span class="nav__icon">👤</span>
       <span class="nav__label">Perfil</span>
+    </a>
+    <a href="#cards" class="nav__item" data-area="cards" data-foco="selfies">
+      <span class="nav__icon">🖼️</span>
+      <span class="nav__label">Minhas Cartas</span>
+    </a>
+    <a href="#settings" class="nav__item" data-area="settings">
+      <span class="nav__icon">⚙️</span>
+      <span class="nav__label">Configurações</span>
+    </a>
+    <a href="#stats" class="nav__item" data-area="stats">
+      <span class="nav__icon">📊</span>
+      <span class="nav__label">Estatísticas</span>
     </a>
   </nav>
 
@@ -58,18 +60,18 @@
     <!-- Áreas renderadas pelo router -->
     <section id="area-home" class="area area--active" aria-label="Início">
       <div class="home">
-        <h2 class="section-title">Bem-vindo ao <span class="highlight">Arcade Collection</span></h2>
-        <p class="home__intro">Seu fliperama retrô no navegador. Jogos, moedas, conquistas e colecionáveis.</p>
+        <h2 class="section-title">Bem-vindo ao <span class="highlight">Memory Quest</span></h2>
+        <p class="home__intro">Seu jogo de memória retrô no navegador. Cartas, desafios, perfil local e colecionáveis.</p>
 
         <div class="home__quick">
-          <a href="#plinko" class="btn btn--arcade btn--large" data-area="plinko">
-            Jogar Plinko
-          </a>
           <a href="#cards" class="btn btn--arcade btn--large" data-area="cards">
-            Jogar Cartas
+            🃏 Jogar Memory Quest
           </a>
-          <a href="#shop" class="btn btn--arcade btn--large" data-area="shop">
-            Acessar Loja
+          <a href="#cards" class="btn btn--arcade btn--large" data-area="cards" data-foco="selfies">
+            🖼️ Minhas Cartas
+          </a>
+          <a href="#stats" class="btn btn--arcade btn--large" data-area="stats">
+            📊 Ver Estatísticas
           </a>
         </div>
 
@@ -90,6 +92,8 @@
       </div>
     </section>
 
+    <!-- Preservado integralmente: código, física, carteira e dados do Plinko.
+         Não aparece na navegação principal do Memory Quest; acessível por #plinko. -->
     <section id="area-plinko" class="area hidden" aria-label="Plinko">
       <div class="game-shell">
         <h2 class="section-title">Plinko</h2>
@@ -102,11 +106,9 @@
 
     <section id="area-cards" class="area hidden" aria-label="Cartas">
       <div class="game-shell">
-        <h2 class="section-title">Card Match</h2>
-        <p class="game__desc">Modo clássico e modo expandido (em desenvolvimento).</p>
-        <div id="cards-board" class="plinko-stub">
-          <div class="stub__msg">🃏 Motor de cartas será implementado na próxima etapa.</div>
-        </div>
+        <h2 class="section-title">Memory Quest — Jogo da Memória</h2>
+        <p class="game__desc">Combine pares, evolua de dificuldade e use suas selfies nas cartas.</p>
+        <div id="cards-board" class="cards-root"></div>
       </div>
     </section>
 
@@ -134,15 +136,31 @@
           <div class="profile__actions">
             <button id="btn-export" class="btn btn--arcade">Exportar backup</button>
             <button id="btn-import" class="btn btn--arcade">Importar backup</button>
+            <button id="btn-abrir-loja" class="btn btn--text" data-area="shop">🛒 Abrir Loja</button>
           </div>
           <div class="profile__backup" id="profile-backup" style="margin-top:1rem;"></div>
+          <div id="profile-board" class="mq-panel"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="area-settings" class="area hidden" aria-label="Configurações">
+      <div class="game-shell">
+        <h2 class="section-title">Configurações</h2>
+        <div id="settings-board" class="mq-panel"></div>
+      </div>
+    </section>
+
+    <section id="area-stats" class="area hidden" aria-label="Estatísticas">
+      <div class="game-shell">
+        <h2 class="section-title">Estatísticas</h2>
+        <div id="stats-board" class="mq-panel"></div>
       </div>
     </section>
   </main>
 
   <footer class="footer">
-    <span class="footer__text">Arcade Collection Alpha — local &amp; offline</span>
+    <span class="footer__text">Memory Quest Alpha — local &amp; offline</span>
   </footer>
 
   <template id="toast-template">

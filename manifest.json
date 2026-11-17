@@ -1,7 +1,7 @@
 {
-  "name": "Arcade Collection",
-  "short_name": "Arcade",
-  "description": "Fliperama retrô com minijogos, moedas virtuais, conquistas e colecionáveis. Funciona offline e instala como PWA no Android.",
+  "name": "Memory Quest",
+  "short_name": "Memory Quest",
+  "description": "Jogo de memória retrô com cartas personalizadas, perfil local, estatísticas e funcionamento offline. Instala como PWA no Android.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

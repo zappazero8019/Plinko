@@ -451,6 +451,94 @@ p { margin: 0 0 1rem; }
   font-size: 0.9rem;
 }
 
+/* Perfil local — identidade, foto e resumo (adição escopada) */
+.profile__avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+#profile-board {
+  width: 100%;
+}
+
+.profile__linha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  width: 100%;
+}
+
+.profile__linha input[type='text'] {
+  flex: 1 1 200px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.5rem 0.7rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text, #e8e8f0);
+  font-family: var(--font-ui, system-ui);
+}
+
+.profile__linha input[type='text']:focus-visible,
+.profile__foto-input:focus-visible {
+  outline: 3px solid #fbbf24;
+  outline-offset: 2px;
+}
+
+.profile__foto-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+  width: 100%;
+}
+
+.profile__foto-acoes .btn--arcade {
+  flex: 1 1 160px;
+}
+
+.profile__foto-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.profile__mensagem {
+  min-height: 1.2rem;
+  margin: 0.5rem 0 0;
+  color: #fca5a5;
+  font-size: 0.8rem;
+}
+
+.profile__dado {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-height: 44px;
+  padding: 0.5rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.profile__dado-rotulo {
+  color: var(--text-muted, #9a9ab8);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.profile__dado-valor {
+  font-family: var(--font-pixel);
+  font-size: 1.1rem;
+  color: var(--success);
+}
+
 /* Banner de instalação PWA */
 .install-banner {
   position: fixed;
@@ -753,6 +841,251 @@ p { margin: 0 0 1rem; }
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- Memory Quest — painéis adicionais ---------- */
+
+.mq-panel {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.mq-panel__bloco {
+  padding: 0.9rem;
+  background: var(--bg-panel, #1f1f33);
+  border: 2px solid var(--border, #3a3a5c);
+  border-radius: var(--radius, 8px);
+}
+
+.mq-panel__titulo {
+  margin: 0 0 0.6rem;
+  color: var(--accent, #ff3e6b);
+  font-family: var(--font-pixel, monospace);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+}
+
+.mq-panel__dica {
+  margin: 0 0 0.7rem;
+  color: var(--text-muted, #9a9ab8);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.mq-panel__linha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mq-panel__linha--stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.mq-panel__opcao {
+  flex: 1 1 180px;
+  min-height: 44px;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.mq-panel__estatistica {
+  margin: 0.25rem 0;
+  color: var(--text, #e8e8f0);
+  font-size: 0.85rem;
+}
+
+.mq-panel__volume {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  color: var(--text, #e8e8f0);
+  font-size: 0.8rem;
+}
+
+.mq-panel__volume input[type='range'] {
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--accent, #ff3e6b);
+  cursor: pointer;
+}
+
+/* ---------- Memory Quest — sistema visual de botões ----------
+   Regras aditivas e escopadas, válidas para o Jogo da Memória. */
+:root {
+  --mq-btn-edge: #0b0b16;
+  --mq-btn-face-hi: #4a4a72;
+  --mq-btn-face-lo: #24243b;
+  --mq-btn-selected: #67e8f9;
+  --mq-btn-focus: #fbbf24;
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+) {
+  position: relative;
+  min-height: 44px;
+  border: 2px solid var(--border, #3a3a5c);
+  color: var(--text, #e8e8f0);
+  background: linear-gradient(180deg, var(--mq-btn-face-hi), var(--mq-btn-face-lo));
+  box-shadow: 0 4px 0 var(--mq-btn-edge), 0 6px 12px rgba(0, 0, 0, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, box-shadow 0.08s ease,
+    border-color 0.12s ease, color 0.12s ease;
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+):hover {
+  border-color: var(--accent, #ff3e6b);
+  color: #ffffff;
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+):active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 var(--mq-btn-edge), 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+):focus-visible {
+  outline: 3px solid var(--mq-btn-focus, #fbbf24);
+  outline-offset: 2px;
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+):disabled,
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+)[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+:is(
+  .btn--arcade,
+  .home__quick .btn,
+  .mq-panel__opcao,
+  #cards-board .cards__mode-btn,
+  #cards-board .diff-btn,
+  #cards-board .cards__visual-opt,
+  #cards-board .cards__audio-btn,
+  #cards-board .cards__toggle,
+  #cards-board .cards__topo-botoes .btn--text,
+  #btn-abrir-loja
+)[aria-pressed="true"],
+#cards-board .diff-btn.active,
+#cards-board .cards__mode-btn--ativo,
+#cards-board .cards__visual-opt--ativo {
+  border-color: var(--mq-btn-selected, #67e8f9);
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.5),
+    0 3px 0 var(--mq-btn-edge), 0 0 12px rgba(103, 232, 249, 0.3);
+}
+
+/* Navegação inferior: alvo de toque confortável e estado ativo sem empilhar botões. */
+.nav__item {
+  min-height: 52px;
+  border-top: 3px solid transparent;
+  box-shadow: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease, transform 0.08s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.nav__item--active {
+  border-top-color: var(--accent, #ff3e6b);
+  background: linear-gradient(180deg, rgba(255, 62, 107, 0.16), transparent);
+  box-shadow: 0 -3px 12px var(--accent-glow, rgba(255, 62, 107, 0.45));
+}
+
+.nav__item:active {
+  transform: translateY(1px);
+}
+
+.nav__item:focus-visible {
+  outline: 3px solid var(--mq-btn-focus, #fbbf24);
+  outline-offset: -3px;
+}
+
+/* Ícones decorativos acompanham o texto nos controles principais. */
+#cards-board .cards__menu .cards__acoes > .btn--arcade::before {
+  content: '▶';
+  margin-right: 0.45rem;
+}
+
+#cards-board .cards__audio-config [data-audio="fx"]::before {
+  content: '♪ ';
+}
+
+#cards-board .cards__audio-config [data-audio="bgm"]::before {
+  content: '♫ ';
 }
 
 /* Preparado para modo escuro forçado em impressão / economia */

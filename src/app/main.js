@@ -1,9 +1,9 @@
 /**
- * main.js — Ponto de entrada da aplicação Arcade Collection (Alpha)
+ * main.js — Ponto de entrada da aplicação Memory Quest (Alpha)
  *
  * Inicializa:
  *  1. Banco IndexedDB (core/database)
- *   2. Carteira compartilhada (core/wallet)
+ *  2. Carteira compartilhada (core/wallet)
  *  3. Router de navegação (src/app/router)
  *  4. Exibição da carteira no cabeçalho
  *  5. Backup/export/import (Perfil)
@@ -18,6 +18,9 @@ import {
 import { init as initRouter, navegarPara } from './router.js';
 import { downloadBackup, lerArquivoBackup, importarProgresso, validarEstrutura } from '../core/backup.js';
 import { init as plinkoInit, destroy as plinkoDestroy } from '../games/plinko/index.js';
+import { init as cardsInit, destroy as cardsDestroy, abrirGaleria as cardsAbrirGaleria } from '../games/cards/index.js';
+import { renderizarConfiguracoes, renderizarEstatisticas } from '../ui/panels.js';
+import { renderizarPerfil } from '../ui/profile.js';
 
 // Elementos DOM
 const walletAmountEl = document.getElementById('wallet-amount');
@@ -27,6 +30,7 @@ const statConquistasEl = document.getElementById('stat-conquistas');
 const btnExport = document.getElementById('btn-export');
 const btnImport = document.getElementById('btn-import');
 const profileBackupEl = document.getElementById('profile-backup');
+const btnAbrirLoja = document.getElementById('btn-abrir-loja');
 const installBanner = document.getElementById('install-banner');
 const installBtn = document.getElementById('install-btn');
 const installDismiss = document.getElementById('install-dismiss');
@@ -166,6 +170,7 @@ function initBackupUI() {
       if (resultado.ok) {
         mostrarToast('Backup restaurado com sucesso');
         await atualizarCarteiraUI();
+        await renderizarPerfil(document.getElementById('profile-board'));
       } else {
         mostrarToast('Falha ao restaurar: ' + (resultado.erros || ['erro desconhecido']).join(', '));
       }
@@ -238,10 +243,15 @@ async function init() {
     console.log('[DB] Integridade:', integridade.ok ? 'ok' : 'falha', integridade);
 
     // 4. Inicializa router
-    initRouter((area) => {
+    initRouter((area, anterior, foco) => {
       // Atualiza a carteira sempre que entrar no início/perfil
       if (area === 'home' || area === 'profile') {
         atualizarCarteiraUI();
+      }
+
+      if (area === 'profile') {
+        renderizarPerfil(document.getElementById('profile-board'))
+          .catch((err) => console.warn('[APP] Falha ao abrir perfil:', err));
       }
 
       // Inicializa/destroi jogos conforme a área
@@ -250,18 +260,47 @@ async function init() {
       } else {
         plinkoDestroy();
       }
+
+      if (area === 'cards') {
+        Promise.resolve(cardsInit())
+          .then(() => {
+            if (foco === 'selfies') return cardsAbrirGaleria();
+            return undefined;
+          })
+          .catch((err) => console.warn('[APP] Falha ao preparar cartas:', err));
+      } else {
+        cardsDestroy();
+      }
+
+      if (area === 'settings') {
+        renderizarConfiguracoes(document.getElementById('settings-board'))
+          .catch((err) => console.warn('[APP] Falha ao abrir configurações:', err));
+      }
+
+      if (area === 'stats') {
+        renderizarEstatisticas(document.getElementById('stats-board'))
+          .catch((err) => console.warn('[APP] Falha ao abrir estatísticas:', err));
+      }
     });
 
     // 5. Atualiza carteira inicial
     await atualizarCarteiraUI();
 
+    // 5b. Perfil local (nome, foto e resumo real) já carregado na área dele
+    await renderizarPerfil(document.getElementById('profile-board'));
+
     // 6. UI de backup
     initBackupUI();
+
+    // 6b. Acesso preservado à Loja sem ocupar a navegação principal
+    if (btnAbrirLoja) {
+      btnAbrirLoja.addEventListener('click', () => navegarPara('shop'));
+    }
 
     // 7. PWA
     initPWA();
 
-    console.log('[APP] Arcade Collection Alpha inicializado');
+    console.log('[APP] Memory Quest Alpha inicializado');
   } catch (err) {
     console.error('[APP] Falha na inicialização:', err);
     mostrarToast('Erro ao inicializar o aplicativo');

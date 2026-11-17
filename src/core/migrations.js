@@ -1,11 +1,12 @@
 /**
  * migrations.js — Controle de versão e migrações do banco de dados
  *
- * Na Alpha, o banco inicia na versão 1. Este módulo prepara a infraestrutura
- * para futuras migrações sem quebrar dados existentes.
+ * O banco inicia na versão 1. A versão 2 acrescenta a store `selfies` para
+ * armazenar as Cartas Selfie do Card Match, preservando todas as stores e
+ * registros anteriores. As migrações continuam Centralizadas aqui.
  */
 
-const DB_VERSION_ATUAL = 1;
+const DB_VERSION_ATUAL = 2;
 
 /**
  * Registra uma migração. Cada migração recebe (database, transaction, oldVersion).

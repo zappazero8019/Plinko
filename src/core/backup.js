@@ -110,9 +110,13 @@ function validarEstrutura(dados) {
     return { valido: false, erros };
   }
 
-  // Verifica se todas as stores obrigatórias estão presentes
+  // Verifica as stores obrigatórias. `selfies` é opcional em backups antigos
+  // (formato 1.0.0 / banco v1): aceitamos o arquivo sem apagar nada e a
+  // importação simplesmente não toca na store nova.
+  const versaoBanco = Number(dados.versaoBanco) || 1;
   for (const storeName of STORES) {
     if (!(storeName in dados.stores)) {
+      if (storeName === 'selfies' && versaoBanco < 2) continue;
       erros.push(`Store obrigatória ausente: ${storeName}`);
     } else if (!Array.isArray(dados.stores[storeName])) {
       erros.push(`Store "${storeName}" não é um array`);
@@ -152,6 +156,12 @@ async function importarProgresso(backup) {
 
   // Executa store por store em transações separadas (atomicidade por store)
   for (const storeName of STORES) {
+    // Backup antigo (banco v1) não contém `selfies`. Nesse caso a store é
+    // preservada intacta: restaurar um arquivo antigo nunca apaga selfies.
+    if (!Object.prototype.hasOwnProperty.call(backup.stores, storeName)) {
+      resumo.push({ store: storeName, registros: 0, preservada: true });
+      continue;
+    }
     const registros = backup.stores[storeName] || [];
     try {
       await transaction(storeName, 'readwrite', (tx) => {
