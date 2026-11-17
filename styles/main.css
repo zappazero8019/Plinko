@@ -1,0 +1,764 @@
+/* ============================================================
+   Arcade Collection — Estilo retrô / fliperama 16 bits
+   ============================================================ */
+
+/* Variáveis de tema */
+:root {
+  --bg: #161625;
+  --bg-panel: #1f1f33;
+  --bg-elevated: #2a2a45;
+  --text: #e8e8f0;
+  --text-muted: #9a9ab8;
+  --accent: #ff3e6b;
+  --accent-glow: rgba(255, 62, 107, 0.45);
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --border: #3a3a5c;
+  --font-pixel: 'Pixel', 'Press Start 2P', 'VT323', monospace;
+  --font-ui: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+
+  --radius: 8px;
+  --shadow: 0 4px 0 rgba(0,0,0,0.5);
+  --shadow-lg: 0 8px 0 rgba(0,0,0,0.6);
+}
+
+/* Reset base */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Tipografia pixel para títulos */
+.logo,
+.section-title,
+.btn--arcade {
+  font-family: var(--font-pixel);
+  letter-spacing: 0.08em;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+p { margin: 0 0 1rem; }
+
+/* Utilitários */
+.hidden { display: none !important; }
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0);
+  border: 0;
+}
+
+/* Cabeçalho */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--bg-panel);
+  border-bottom: 4px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.logo {
+  font-size: 1.5rem;
+  color: var(--text);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.logo__accent {
+  color: var(--accent);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+.header__wallet {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-elevated);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.8rem;
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+  color: var(--success);
+}
+
+.wallet__label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.wallet__amount {
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 8px rgba(74, 222, 128, 0.35);
+}
+
+.wallet__coin {
+  font-size: 1.1rem;
+}
+
+/* Navegação inferior fixa (mobile-friendly) */
+.nav-bottom {
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-panel);
+  border-top: 4px solid var(--border);
+  justify-content: space-around;
+  padding: 0.5rem 0.25rem;
+  z-index: 50;
+}
+
+.nav__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: var(--radius);
+  transition: background 0.15s, color 0.15s;
+  min-width: 64px;
+}
+
+.nav__item:hover,
+.nav__item:focus-visible {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.nav__item--active {
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.nav__icon {
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.nav__label {
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+}
+
+/* Main / áreas */
+.app {
+  flex: 1;
+  padding: 1rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.area {
+  display: none;
+  animation: fadeIn 0.25s ease;
+}
+
+.area--active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.section-title {
+  font-size: 1.35rem;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+  text-shadow: 0 2px 0 rgba(0,0,0,0.6);
+}
+
+/* Início */
+.home__intro {
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+  font-size: 1.05rem;
+}
+
+.home__quick {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.home__status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+}
+
+.stat-card {
+  background: var(--bg-panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  text-align: center;
+}
+
+.stat__label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.4rem;
+}
+
+.stat__value {
+  font-family: var(--font-pixel);
+  font-size: 1.5rem;
+  color: var(--success);
+}
+
+/* Botões arcade */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius);
+  font-family: var(--font-pixel);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.05s, box-shadow 0.1s;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.btn:active {
+  transform: translateY(2px);
+}
+
+.btn--arcade {
+  background: linear-gradient(180deg, #3a3a5c, #2a2a45);
+  border: 3px solid var(--border);
+  color: var(--text);
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.btn--arcade:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.btn--arcade:active {
+  box-shadow: 0 2px 0 rgba(0,0,0,0.6);
+}
+
+.btn--large {
+  width: 100%;
+  padding: 1rem;
+  font-size: 1.1rem;
+}
+
+.btn--text {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+
+.btn--text:hover {
+  color: var(--text);
+}
+
+/* Shell dos jogos (stubs) */
+.game-shell {
+  background: var(--bg-panel);
+  border: 4px double var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.game__desc {
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+}
+
+.plinko-stub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+  background: var(--bg);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.plinko-stub__content {
+  color: var(--text-muted);
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+  max-width: 340px;
+  text-align: center;
+}
+
+.stub__msg {
+  color: var(--text-muted);
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+}
+
+/* Loja — cards de item (próxima etapa) */
+.shop-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--bg-panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  text-align: center;
+}
+
+.shop-item__raridade {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+.shop-item__nome {
+  font-family: var(--font-pixel);
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.shop-item__preco {
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.shop-item__btn {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+}
+
+/* Perfil */
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.profile__info {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  width: 100%;
+}
+
+.profile__avatar-placeholder {
+  font-size: 4rem;
+  width: 96px;
+  height: 96px;
+  border: 4px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+.profile__text {
+  display: flex;
+  flex-direction: column;
+}
+
+.profile__nome {
+  font-family: var(--font-pixel);
+  font-size: 1.6rem;
+  color: var(--accent);
+}
+
+.profile__id {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.profile__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.profile__actions .btn--arcade {
+  flex: 1 1 140px;
+}
+
+.profile__backup {
+  width: 100%;
+  padding: 1rem;
+  background: var(--bg-elevated);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Banner de instalação PWA */
+.install-banner {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  background: var(--bg-elevated);
+  border: 3px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  box-shadow: var(--shadow-lg);
+  animation: slideDown 0.35s ease;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: none; }
+}
+
+.install-banner__content {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.install-banner strong {
+  color: var(--text);
+  font-family: var(--font-pixel);
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1.25rem;
+  color: var(--text);
+  font-family: var(--font-pixel);
+  font-size: 0.9rem;
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  animation: toastIn 0.25s ease;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Responsividade */
+@media (min-width: 640px) {
+  .logo { font-size: 1.75rem; }
+  .home__quick {
+    flex-direction: row;
+  }
+  .home__quick .btn--large {
+    width: auto;
+    flex: 1;
+  }
+}
+
+@media (max-width: 480px) {
+  .nav__label { font-size: 0.55rem; }
+  .nav__icon { font-size: 1.2rem; }
+  .section-title { font-size: 1.15rem; }
+  .header { padding: 0.6rem 0.9rem; }
+}
+
+/* ============================================================
+   Plinko — estilos do jogo
+   ============================================================ */
+
+.plinko-game {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.plinko__controls {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 420px;
+}
+
+.plinko__difficulty {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.diff-btn {
+  background: var(--bg-elevated);
+  border: 2px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.75rem;
+  font-family: var(--font-pixel);
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+
+.diff-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.diff-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.plinko__bet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.plinko__bet-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.plinko__bet-controls button {
+  background: var(--bg-elevated);
+  border: 2px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.plinko__bet-controls button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.plinko__bet-controls button:active {
+  transform: translateY(1px);
+}
+
+#plinko-bet-value {
+  font-family: var(--font-pixel);
+  font-size: 1.1rem;
+  color: var(--success);
+  min-width: 24px;
+  text-align: center;
+}
+
+#plinko-saldo {
+  font-family: var(--font-pixel);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+#plinko-saldo span {
+  color: var(--success);
+}
+
+.plinko__canvas {
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  aspect-ratio: 9 / 14;
+  background: #0f0f1a;
+  border: 3px double var(--border);
+  border-radius: var(--radius);
+  display: block;
+  margin: 0 auto;
+  box-shadow: var(--shadow);
+}
+
+.plinko__feedback {
+  min-height: 1.2rem;
+  font-family: var(--font-pixel);
+  font-size: 0.85rem;
+  color: var(--warning);
+  text-align: center;
+  transition: opacity 0.2s;
+}
+
+.plinko__launch {
+  background: linear-gradient(180deg, #3a3a5c, #2a2a45);
+  border: 3px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-pixel);
+  font-size: 1rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 260px;
+}
+
+.plinko__launch:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.plinko__launch:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 rgba(0,0,0,0.6);
+}
+
+.plinko__launch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  border-color: #555;
+  color: #888;
+}
+
+.plinko__history {
+  width: 100%;
+  max-width: 340px;
+  margin-top: 0.5rem;
+}
+
+.plinko__history h4 {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0 0 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+#plinko-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+#plinko-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-family: var(--font-pixel);
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.hist__time {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.hist__mult {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hist__coins {
+  font-variant-numeric: tabular-nums;
+}
+
+.hist__coins.win { color: var(--success); }
+.hist__coins.lose { color: var(--accent); }
+
+/* Touch: evita seleção de texto nos controles */
+.plinko__controls button,
+.plinko__launch {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Preparado para modo escuro forçado em impressão / economia */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

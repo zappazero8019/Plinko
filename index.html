@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <title>Arcade Collection</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles/main.css" />
+  <link rel="preload" as="font" href="assets/fonts/pixel.ttf" />
+  <script type="module" src="src/app/main.js"></script>
+</head>
+<body>
+  <!-- Overlay de instalação PWA -->
+  <div id="install-banner" class="install-banner hidden" aria-live="polite">
+    <div class="install-banner__content">
+      <strong>Instalar Arcade Collection</strong>
+      <button id="install-btn" class="btn btn--arcade">Instalar app</button>
+      <button id="install-dismiss" class="btn btn--text">×</button>
+    </div>
+  </div>
+
+  <header class="header" aria-label="Cabeçalho">
+    <div class="header__brand">
+      <h1 class="logo">ARC<span class="logo__accent">ADE</span> COLLECTION</h1>
+    </div>
+    <div class="header__wallet" aria-label="Carteira virtual">
+      <span class="wallet__label">Moedas</span>
+      <span id="wallet-amount" class="wallet__amount">0</span>
+      <span class="wallet__coin">🪙</span>
+    </div>
+  </header>
+
+  <nav class="nav-bottom" aria-label="Navegação principal">
+    <a href="#home" class="nav__item nav__item--active" data-area="home" aria-current="true">
+      <span class="nav__icon">🏠</span>
+      <span class="nav__label">Início</span>
+    </a>
+    <a href="#plinko" class="nav__item" data-area="plinko">
+      <span class="nav__icon">🎯</span>
+      <span class="nav__label">Plinko</span>
+    </a>
+    <a href="#cards" class="nav__item" data-area="cards">
+      <span class="nav__icon">🃏</span>
+      <span class="nav__label">Cartas</span>
+    </a>
+    <a href="#shop" class="nav__item" data-area="shop">
+      <span class="nav__icon">🛒</span>
+      <span class="nav__label">Loja</span>
+    </a>
+    <a href="#profile" class="nav__item" data-area="profile">
+      <span class="nav__icon">👤</span>
+      <span class="nav__label">Perfil</span>
+    </a>
+  </nav>
+
+  <main class="app" id="app">
+    <!-- Áreas renderadas pelo router -->
+    <section id="area-home" class="area area--active" aria-label="Início">
+      <div class="home">
+        <h2 class="section-title">Bem-vindo ao <span class="highlight">Arcade Collection</span></h2>
+        <p class="home__intro">Seu fliperama retrô no navegador. Jogos, moedas, conquistas e colecionáveis.</p>
+
+        <div class="home__quick">
+          <a href="#plinko" class="btn btn--arcade btn--large" data-area="plinko">
+            Jogar Plinko
+          </a>
+          <a href="#cards" class="btn btn--arcade btn--large" data-area="cards">
+            Jogar Cartas
+          </a>
+          <a href="#shop" class="btn btn--arcade btn--large" data-area="shop">
+            Acessar Loja
+          </a>
+        </div>
+
+        <div class="home__status">
+          <div class="stat-card">
+            <span class="stat__label">Saldo</span>
+            <span id="stat-saldo" class="stat__value">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat__label">Partidas</span>
+            <span id="stat-partidas" class="stat__value">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat__label">Conquistas</span>
+            <span id="stat-conquistas" class="stat__value">0</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="area-plinko" class="area hidden" aria-label="Plinko">
+      <div class="game-shell">
+        <h2 class="section-title">Plinko</h2>
+        <p class="game__desc">Tabuleiro triangular com física real (em desenvolvimento).</p>
+        <div id="plinko-board" class="plinko-stub">
+          <div class="stub__msg">🎯 Motor físico do Plinko será implementado na próxima etapa.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="area-cards" class="area hidden" aria-label="Cartas">
+      <div class="game-shell">
+        <h2 class="section-title">Card Match</h2>
+        <p class="game__desc">Modo clássico e modo expandido (em desenvolvimento).</p>
+        <div id="cards-board" class="plinko-stub">
+          <div class="stub__msg">🃏 Motor de cartas será implementado na próxima etapa.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="area-shop" class="area hidden" aria-label="Loja">
+      <div class="game-shell">
+        <h2 class="section-title">Loja de Colecionáveis</h2>
+        <p class="game__desc">Avatares, molduras, temas e efeitos (em desenvolvimento).</p>
+        <div id="shop-board" class="plinko-stub">
+          <div class="stub__msg">🛒 Loja e inventário estarão disponíveis em breve.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="area-profile" class="area hidden" aria-label="Perfil">
+      <div class="game-shell">
+        <h2 class="section-title">Perfil</h2>
+        <div class="profile">
+          <div class="profile__info">
+            <div class="profile__avatar-placeholder">👤</div>
+            <div class="profile__text">
+              <div id="profile-nome" class="profile__nome">Jogador</div>
+              <div id="profile-id" class="profile__id">ID: —</div>
+            </div>
+          </div>
+          <div class="profile__actions">
+            <button id="btn-export" class="btn btn--arcade">Exportar backup</button>
+            <button id="btn-import" class="btn btn--arcade">Importar backup</button>
+          </div>
+          <div class="profile__backup" id="profile-backup" style="margin-top:1rem;"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span class="footer__text">Arcade Collection Alpha — local &amp; offline</span>
+  </footer>
+
+  <template id="toast-template">
+    <div class="toast" role="alert" aria-live="polite"></div>
+  </template>
+</body>
+</html>

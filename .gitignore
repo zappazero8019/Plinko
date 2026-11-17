@@ -1,0 +1,33 @@
+# Dependências
+node_modules/
+
+# Ambiente virtual do Graphify (não versionar)
+.venv-graphify/
+
+# Arquivos temporários e logs
+*.log
+*.tmp
+*.temp
+
+# Ambiente e segredos
+.env
+.env.local
+.env.*.local
+
+# Backups locais (não versionar)
+backups/
+Backups/
+
+# Artefatos do Graphify (cache de análise, regenerável)
+graphify-out/
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build/output (caso haja ferramentas de build futuras)
+dist/
+build/
+*.pyc
+__pycache__/
