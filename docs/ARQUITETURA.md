@@ -43,7 +43,7 @@ arcade-collection/ (raiz do repositório)
 ├── .nojekyll                  # Desativa Jekyll no GitHub Pages
 ├── styles/main.css            # Estilo retrô global
 ├── src/
-│   ├── app/{main.js,router.js,components.js}
+│   ├── app/{main.js,router.js}
 │   ├── core/                  # Banco, migrações, carteira, transações, estatísticas, backup, settings, selfies, profile
 │   │   ├── migrations.js       # Versão única do esquema (DB_VERSION_ATUAL = 2)
 │   │   ├── selfies.js          # CRUD/processamento das Cartas Selfie

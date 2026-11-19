@@ -6,7 +6,13 @@
  * exportar/importar backup reflete imediatamente no perfil exibido.
  */
 
-import { obterPerfil, salvarPerfil, processarAvatar, NOME_MAXIMO } from '../core/profile.js';
+import {
+  obterPerfil,
+  salvarPerfil,
+  excluirPerfil,
+  processarAvatar,
+  NOME_MAXIMO
+} from '../core/profile.js';
 import { obterEstatisticas, contarPartidas } from '../core/game-stats.js';
 import { getEstado } from '../core/wallet.js';
 
@@ -29,7 +35,7 @@ export function atualizarCabecalhoPerfil(perfil) {
   const nomeEl = document.getElementById('profile-nome');
   const idEl = document.getElementById('profile-id');
   const avatarEl = document.querySelector('.profile__avatar-placeholder');
-  if (nomeEl) nomeEl.textContent = perfil.nome;
+  if (nomeEl) nomeEl.textContent = perfil.excluido ? 'Sem perfil' : perfil.nome;
   if (idEl) idEl.textContent = perfil.id == null ? 'ID: local' : `ID: ${perfil.id}`;
   if (avatarEl) {
     avatarEl.replaceChildren();
@@ -118,9 +124,47 @@ export async function renderizarPerfil(root) {
     }
   }));
 
-  const mensagem = el('p', 'profile__mensagem', '');
+  const mensagem = el('p', 'profile__mensagem', perfil.excluido
+    ? 'Perfil excluído neste dispositivo. Digite um nome para criar outro.'
+    : '');
   mensagem.setAttribute('role', 'status');
   identidade.appendChild(mensagem);
+
+  const exclusao = el('div', 'profile__exclusao');
+  exclusao.appendChild(el('h4', 'mq-panel__titulo', 'Excluir perfil'));
+  exclusao.appendChild(el('p', 'mq-panel__dica',
+    'Remove somente nome, avatar selecionado e foto de perfil. ' +
+    'Preserva estatísticas, histórico de partidas, conquistas, progressão, selfies de Minhas Cartas, ' +
+    'configurações, carteira e transações do Memory Quest, dados do Plinko e backups existentes. ' +
+    'Uma limpeza completa dos dados, se um dia existir, será uma ação separada com confirmação própria.'));
+  exclusao.appendChild(botao('Excluir perfil', 'btn btn--arcade profile__excluir', async () => {
+    const confirmar = typeof globalThis.confirm === 'function'
+      ? globalThis.confirm(
+        'Excluir perfil?\n\nSerá apagado somente:\n' +
+        '• nome do jogador\n• avatar selecionado\n• foto de perfil\n\n' +
+        'Será preservado:\n' +
+        '• estatísticas e histórico de partidas\n' +
+        '• conquistas e progressão\n' +
+        '• selfies cadastradas em Minhas Cartas\n' +
+        '• configurações\n' +
+        '• carteira e transações do Memory Quest\n' +
+        '• dados do Plinko e backups existentes\n\n' +
+        'Esta ação NÃO apaga todos os dados do dispositivo.'
+      )
+      : false;
+    if (!confirmar) {
+      mensagem.textContent = 'Exclusão cancelada.';
+      return;
+    }
+    try {
+      await excluirPerfil();
+      await renderizarPerfil(root);
+    } catch (err) {
+      console.warn('[perfil] Falha ao excluir perfil:', err);
+      mensagem.textContent = 'Não foi possível excluir o perfil.';
+    }
+  }));
+  identidade.appendChild(exclusao);
   root.appendChild(identidade);
 
   const resumo = el('section', 'mq-panel__bloco');

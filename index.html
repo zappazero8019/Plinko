@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="theme-color" content="#080814" />
   <meta name="description" content="Memory Quest — jogo de memória retrô com cartas personalizadas, perfil local, estatísticas e funcionamento offline." />
   <title>Memory Quest</title>
   <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="assets/icons/icon-192.png" />
   <link rel="stylesheet" href="styles/main.css" />
   <link rel="stylesheet" href="src/games/cards/styles.css" />
-  <link rel="preload" as="font" href="assets/fonts/pixel.ttf" />
   <script type="module" src="src/app/main.js"></script>
 </head>
 <body>
@@ -59,25 +59,37 @@
   <main class="app" id="app">
     <!-- Áreas renderadas pelo router -->
     <section id="area-home" class="area area--active" aria-label="Início">
-      <div class="home">
-        <h2 class="section-title">Bem-vindo ao <span class="highlight">Memory Quest</span></h2>
-        <p class="home__intro">Seu jogo de memória retrô no navegador. Cartas, desafios, perfil local e colecionáveis.</p>
+      <div class="home home--arcade">
+        <div class="home__hero">
+          <p class="home__eyebrow">▶ Inserir ficha</p>
+          <h2 class="section-title home__titulo">Bem-vindo ao <span class="highlight">Memory Quest</span></h2>
+          <p class="home__intro">Seu jogo de memória retrô no navegador. Cartas, desafios, perfil local e colecionáveis.</p>
+        </div>
 
         <div class="home__quick">
-          <a href="#cards" class="btn btn--arcade btn--large" data-area="cards">
-            🃏 Jogar Memory Quest
-          </a>
-          <a href="#cards" class="btn btn--arcade btn--large" data-area="cards" data-foco="selfies">
-            🖼️ Minhas Cartas
-          </a>
-          <a href="#stats" class="btn btn--arcade btn--large" data-area="stats">
-            📊 Ver Estatísticas
+          <a href="#cards" class="btn btn--arcade btn--large btn--hero" data-area="cards">
+            ▶ Jogar Memory Quest
           </a>
         </div>
 
-        <div class="home__status">
+        <nav class="home__menu" aria-label="Menu principal">
+          <a href="#cards" class="btn btn--arcade" data-area="cards" data-foco="selfies">
+            <span aria-hidden="true">🖼️</span> Minhas Cartas
+          </a>
+          <a href="#profile" class="btn btn--arcade" data-area="profile">
+            <span aria-hidden="true">👤</span> Perfil
+          </a>
+          <a href="#stats" class="btn btn--arcade" data-area="stats">
+            <span aria-hidden="true">📊</span> Estatísticas
+          </a>
+          <a href="#settings" class="btn btn--arcade" data-area="settings">
+            <span aria-hidden="true">⚙️</span> Configurações
+          </a>
+        </nav>
+
+        <div class="home__status" aria-label="Situação do jogador">
           <div class="stat-card">
-            <span class="stat__label">Saldo</span>
+            <span class="stat__label">Saldo de moedas</span>
             <span id="stat-saldo" class="stat__value">0</span>
           </div>
           <div class="stat-card">

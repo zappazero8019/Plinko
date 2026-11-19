@@ -12,6 +12,7 @@
 import {
   getAll, get, STORES, transaction, put, del, clear, DB_VERSION
 } from './database.js';
+import { MQ_WALLET_ID } from './mq-economy.js';
 
 /**
  * Envolve um IDBRequest em uma Promise (onsuccess/onerror).
@@ -24,6 +25,38 @@ function requestPromise(request) {
 }
 
 const FORMATO_VERSION = '1.0.0';
+
+/**
+ * Stores introduzidas em versões posteriores do banco. Backups antigos podem
+ * omiti-las: nesse caso a restauração preserva o que já existe no dispositivo.
+ */
+const STORES_OPCIONAIS_POR_VERSAO = Object.freeze({
+  selfies: 2,
+  mqWallet: 3,
+  mqTransactions: 3,
+  mqSessions: 3
+});
+
+function storeOpcionalNoBackup(storeName, versaoBanco) {
+  const versaoMinima = STORES_OPCIONAIS_POR_VERSAO[storeName];
+  return versaoMinima != null && versaoBanco < versaoMinima;
+}
+
+/**
+ * A carteira isolada do Memory Quest tem ID fixo (MQ_WALLET_ID), usado por
+ * obterSaldoMQ(). Reinserir o registro sem ID faria o autoIncrement gerar
+ * outro ID e esconder o saldo restaurado.
+ *
+ * Backups gerados pelo app já contêm o ID. Formatos antigos sem ID são
+ * aceitos e recebem o ID canônico. IDs divergentes também são normalizados
+ * para evitar duas carteiras ativas.
+ */
+function registrosCarteiraMQ(registros) {
+  if (!Array.isArray(registros) || registros.length === 0) return [];
+  const preferida = registros.find((reg) => reg && reg.id === MQ_WALLET_ID) || registros[0];
+  if (!preferida || typeof preferida !== 'object') return [];
+  return [{ ...preferida, id: MQ_WALLET_ID }];
+}
 
 /**
  * Estrutura esperada de um backup válido.
@@ -110,13 +143,13 @@ function validarEstrutura(dados) {
     return { valido: false, erros };
   }
 
-  // Verifica as stores obrigatórias. `selfies` é opcional em backups antigos
-  // (formato 1.0.0 / banco v1): aceitamos o arquivo sem apagar nada e a
-  // importação simplesmente não toca na store nova.
+  // Verifica as stores obrigatórias. Stores introduzidas em versões posteriores
+  // são opcionais em backups antigos: aceitamos o arquivo sem apagar nada e a
+  // importação simplesmente não toca nelas.
   const versaoBanco = Number(dados.versaoBanco) || 1;
   for (const storeName of STORES) {
     if (!(storeName in dados.stores)) {
-      if (storeName === 'selfies' && versaoBanco < 2) continue;
+      if (storeOpcionalNoBackup(storeName, versaoBanco)) continue;
       erros.push(`Store obrigatória ausente: ${storeName}`);
     } else if (!Array.isArray(dados.stores[storeName])) {
       erros.push(`Store "${storeName}" não é um array`);
@@ -156,20 +189,28 @@ async function importarProgresso(backup) {
 
   // Executa store por store em transações separadas (atomicidade por store)
   for (const storeName of STORES) {
-    // Backup antigo (banco v1) não contém `selfies`. Nesse caso a store é
-    // preservada intacta: restaurar um arquivo antigo nunca apaga selfies.
+    // Store introduzida em versão posterior e ausente no backup antigo:
+    // preservada intacta. Restaurar um arquivo antigo nunca apaga dados novos.
     if (!Object.prototype.hasOwnProperty.call(backup.stores, storeName)) {
       resumo.push({ store: storeName, registros: 0, preservada: true });
       continue;
     }
     const registros = backup.stores[storeName] || [];
+    // Apenas a carteira do Memory Quest possui ID fixo e consulta por ID.
+    // As demais stores mantêm o comportamento original de reatribuição.
+    const ehCarteiraMQ = storeName === 'mqWallet';
+    const registrosImportar = ehCarteiraMQ ? registrosCarteiraMQ(registros) : registros;
     try {
       await transaction(storeName, 'readwrite', (tx) => {
         const store = tx.objectStore(storeName);
         return new Promise((resolve, reject) => {
           const clearReq = store.clear();
           clearReq.onsuccess = () => {
-            const promises = registros.map((reg) => {
+            const promises = registrosImportar.map((reg) => {
+              if (ehCarteiraMQ) {
+                // put() com ID explícito não depende do gerador de autoIncrement.
+                return requestPromise(store.put(reg));
+              }
               const { id, ...semId } = reg;
               return requestPromise(store.add(semId));
             });

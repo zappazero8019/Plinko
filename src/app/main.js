@@ -21,6 +21,7 @@ import { init as plinkoInit, destroy as plinkoDestroy } from '../games/plinko/in
 import { init as cardsInit, destroy as cardsDestroy, abrirGaleria as cardsAbrirGaleria } from '../games/cards/index.js';
 import { renderizarConfiguracoes, renderizarEstatisticas } from '../ui/panels.js';
 import { renderizarPerfil } from '../ui/profile.js';
+import { contarConquistasDesbloqueadas } from '../core/game-stats.js';
 
 // Elementos DOM
 const walletAmountEl = document.getElementById('wallet-amount');
@@ -61,7 +62,7 @@ async function atualizarCarteiraUI() {
       statPartidasEl.textContent = formatarMoeda(partidas);
     }
     if (statConquistasEl) {
-      const conquistas = await contarConquistas();
+      const conquistas = await contarConquistasDesbloqueadas();
       statConquistasEl.textContent = formatarMoeda(conquistas);
     }
   } catch (err) {
@@ -76,19 +77,6 @@ async function contarPartidas() {
   try {
     const { count } = await import('../core/database.js');
     return await count('matches');
-  } catch (e) {
-    return 0;
-  }
-}
-
-/**
- * Conta conquistas desbloqueadas (placeholder).
- */
-async function contarConquistas() {
-  try {
-    const { getAll } = await import('../core/database.js');
-    const todas = await getAll('achievements');
-    return todas.filter((a) => a.desbloqueada).length;
   } catch (e) {
     return 0;
   }

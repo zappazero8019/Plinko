@@ -21,6 +21,23 @@ export const PROGRESSAO_CARTAS = Object.freeze([
 ]);
 
 /**
+ * Tempos obrigatórios da prévia das cartas, por dificuldade.
+ * A prévia é parte da apresentação e NUNCA entra no cronômetro oficial.
+ */
+export const TEMPOS_PREVIA_CARTAS = Object.freeze({
+  facil: 3000,
+  normal: 4000,
+  dificil: 5000,
+  muitodificil: 6000,
+  extremo: 8000
+});
+
+/** Retorna o tempo de prévia em ms; valores desconhecidos caem em Normal. */
+export function obterTempoPrevia(chave) {
+  return TEMPOS_PREVIA_CARTAS[chave] ?? TEMPOS_PREVIA_CARTAS.normal;
+}
+
+/**
  * Dificuldades do modo SMB3.
  *
  * Tempos adotados (documentados em docs/DECISOES_TECNICAS.md):
@@ -124,11 +141,21 @@ export function getDificuldadeCartasExpandido(chave) {
 }
 
 /**
- * Próxima dificuldade da progressão expandida (cyclicamente).
+ * Próxima dificuldade da progressão expandida.
+ * A progressão NÃO é cíclica: Extremo permanece em Extremo.
  * @param {string} chave
  */
 export function proximaDificuldade(chave) {
   const indice = PROGRESSAO_CARTAS.indexOf(chave);
   const seguro = indice === -1 ? 0 : indice;
-  return PROGRESSAO_CARTAS[(seguro + 1) % PROGRESSAO_CARTAS.length];
+  const proximo = Math.min(seguro + 1, PROGRESSAO_CARTAS.length - 1);
+  return PROGRESSAO_CARTAS[proximo];
+}
+
+/**
+ * Dificuldade após uma vitória legítima. Se a progressão estiver desligada,
+ * a dificuldade escolhida pelo jogador permanece fixa.
+ */
+export function dificuldadeAposVitoria(chave, progressaoAtiva) {
+  return progressaoAtiva ? proximaDificuldade(chave) : chave;
 }

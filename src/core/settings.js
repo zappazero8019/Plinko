@@ -13,6 +13,7 @@
  */
 
 import { getAll, put } from './database.js';
+import { PROGRESSAO_CARTAS } from '../games/cards/difficulty.js';
 
 /** Modos de visualização ampliada aceitos pelo Card Match Expandido. */
 export const VISUALIZACAO_CARTAS = Object.freeze({
@@ -23,6 +24,12 @@ export const VISUALIZACAO_CARTAS = Object.freeze({
 
 /** Padrão para instalações novas e existentes. */
 export const VISUALIZACAO_PADRAO = VISUALIZACAO_CARTAS.ORIGINAL;
+
+/** Faixa do tamanho configurável da carta ampliada (passos de 5%). */
+export const TAMANHO_AMPLIACAO_PADRAO = 120;
+export const TAMANHO_AMPLIACAO_MIN = 100;
+export const TAMANHO_AMPLIACAO_MAX = 150;
+export const TAMANHO_AMPLIACAO_PASSO = 5;
 
 /** Modalidades do Card Match Expandido. */
 export const MODALIDADES_CARTAS = Object.freeze({
@@ -43,8 +50,12 @@ export const VOLUME_BGM_PADRAO = 65;
 export const VOLUME_MIN = 0;
 export const VOLUME_MAX = 100;
 
+/** Compatível com o comportamento anterior: progressão já era implícita. */
+export const PROGRESSAO_AUTOMATICA_PADRAO = true;
+
 const MODOS_VALIDOS = new Set(Object.values(VISUALIZACAO_CARTAS));
 const MODALIDADES_VALIDAS = new Set(Object.values(MODALIDADES_CARTAS));
+const DIFICULDADES_VALIDAS = new Set(PROGRESSAO_CARTAS);
 
 /** Valores iniciais mantidos quando o registro ainda não existe. */
 const PADRAO_SETTINGS = Object.freeze({
@@ -52,8 +63,10 @@ const PADRAO_SETTINGS = Object.freeze({
   vibracao: true,
   dificuldadePlinko: 'normal',
   dificuldadeCartas: 'normal',
+  progressaoAutomaticaCartas: PROGRESSAO_AUTOMATICA_PADRAO,
   cronometroCartas: false,
   visualizacaoCartas: VISUALIZACAO_PADRAO,
+  tamanhoAmpliacaoCartas: TAMANHO_AMPLIACAO_PADRAO,
   modalidadeCartas: MODALIDADE_PADRAO,
   cheatInfinitasCartas: false,
   cheatPersonalizadaCartas: false,
@@ -70,12 +83,40 @@ export function normalizarVisualizacaoCartas(valor) {
   return MODOS_VALIDOS.has(valor) ? valor : VISUALIZACAO_PADRAO;
 }
 
+/**
+ * Normaliza o tamanho da ampliação para 100–150% em incrementos de 5%.
+ * Backups antigos sem o campo recebem 120%; valores inválidos não apagam a
+ * preferência gravada, apenas caem no padrão na leitura.
+ */
+export function normalizarTamanhoAmpliacao(valor) {
+  if (valor === undefined || valor === null || valor === '') {
+    return TAMANHO_AMPLIACAO_PADRAO;
+  }
+  const numero = Number(valor);
+  if (!Number.isFinite(numero)) return TAMANHO_AMPLIACAO_PADRAO;
+  const passos = Math.round(numero / TAMANHO_AMPLIACAO_PASSO);
+  const limitado = Math.min(
+    Math.round(TAMANHO_AMPLIACAO_MAX / TAMANHO_AMPLIACAO_PASSO),
+    Math.max(Math.round(TAMANHO_AMPLIACAO_MIN / TAMANHO_AMPLIACAO_PASSO), passos)
+  );
+  return limitado * TAMANHO_AMPLIACAO_PASSO;
+}
+
 export function normalizarModalidadeCartas(valor) {
   return MODALIDADES_VALIDAS.has(valor) ? valor : MODALIDADE_PADRAO;
 }
 
+/** Reaproveita a ordem canônica de difficulty.js como fonte única de verdade. */
+export function normalizarDificuldadeCartas(valor) {
+  return DIFICULDADES_VALIDAS.has(valor) ? valor : 'normal';
+}
+
 export function normalizarBooleano(valor, padrao) {
   return typeof valor === 'boolean' ? valor : padrao;
+}
+
+export function normalizarProgressaoAutomaticaCartas(valor) {
+  return normalizarBooleano(valor, PROGRESSAO_AUTOMATICA_PADRAO);
 }
 
 export function normalizarQuantidadeCheat(valor) {
@@ -113,7 +154,10 @@ export function normalizarSelfiesAtivas(valor) {
 }
 
 const NORMALIZADORES = Object.freeze({
+  dificuldadeCartas: (valor) => normalizarDificuldadeCartas(valor),
+  progressaoAutomaticaCartas: (valor) => normalizarProgressaoAutomaticaCartas(valor),
   visualizacaoCartas: (valor) => normalizarVisualizacaoCartas(valor),
+  tamanhoAmpliacaoCartas: (valor) => normalizarTamanhoAmpliacao(valor),
   modalidadeCartas: (valor) => normalizarModalidadeCartas(valor),
   cheatInfinitasCartas: (valor) => normalizarBooleano(valor, false),
   cheatPersonalizadaCartas: (valor) => normalizarBooleano(valor, false),
@@ -157,6 +201,30 @@ export async function obterPreferenciasCartas() {
 }
 
 /**
+ * Observadores locais de preferências. Permitem que a partida já aberta aplique
+ * uma mudança feita no painel de Configurações sem recriar o renderer nem
+ * reiniciar a rodada. Não criam estado paralelo: recebem o registro normalizado
+ * que acabou de ser gravado.
+ */
+const observadoresPreferencias = new Set();
+
+export function registrarObservadorPreferencias(callback) {
+  if (typeof callback !== 'function') return () => {};
+  observadoresPreferencias.add(callback);
+  return () => observadoresPreferencias.delete(callback);
+}
+
+function notificarPreferencias(preferencias) {
+  for (const observador of [...observadoresPreferencias]) {
+    try {
+      observador(preferencias);
+    } catch (err) {
+      console.warn('[settings] Observador de preferências falhou:', err);
+    }
+  }
+}
+
+/**
  * Fila de escrita: duas mudanças rápidas (por exemplo, arrastar os dois sliders
  * de volume) não podem ler o mesmo registro antigo e sobrescrever a primeira.
  * Cada gravação enxerga o resultado da anterior.
@@ -178,6 +246,7 @@ export async function salvarPreferenciasCartas(patch = {}) {
       }
     }
     await put('settings', proximo);
+    notificarPreferencias(proximo);
     return proximo;
   });
   // Uma falha não pode travar as gravações seguintes.
@@ -202,6 +271,16 @@ export async function obterVisualizacaoCartas() {
 export async function salvarVisualizacaoCartas(modo) {
   const preferencias = await salvarPreferenciasCartas({ visualizacaoCartas: modo });
   return preferencias.visualizacaoCartas;
+}
+
+/** Atalhos semânticos para o tamanho da carta ampliada. */
+export async function obterTamanhoAmpliacaoCartas() {
+  return (await obterPreferenciasCartas()).tamanhoAmpliacaoCartas;
+}
+
+export async function salvarTamanhoAmpliacaoCartas(valor) {
+  const preferencias = await salvarPreferenciasCartas({ tamanhoAmpliacaoCartas: valor });
+  return preferencias.tamanhoAmpliacaoCartas;
 }
 
 /** Atalhos semânticos usados pelo integrador do Card Match. */

@@ -4,7 +4,8 @@
  * Responsabilidades:
  *  - Abrir e versionar o banco de dados IndexedDB
  *  - Gerenciar stores independentes: profile, wallet, transactions, games,
- *    matches, inventory, achievements, settings, metadata, selfies
+ *    matches, inventory, achievements, settings, metadata, selfies e as stores
+ *    isoladas do Memory Quest (mqWallet, mqTransactions, mqSessions)
  *  - Oferecer API de transações atômicas (promissória)
  *  - Controle de versão e migrações
  *  - Verificação de integridade e solicitação de persistência
@@ -18,10 +19,12 @@ import { DB_VERSION_ATUAL, aplicarMigracoes } from './migrations.js';
 const DB_NAME = 'ArcadeCollection';
 
 /**
- * v2 adiciona APENAS a store `selfies` (imagens locais do Card Match).
- * A migração é aditiva: nenhuma store existente é recriada, limpa ou apagada,
- * e o seed inicial só roda em bancos realmente novos (oldVersion < 1).
- * A versão única vive em migrations.js para evitar números divergentes.
+ * v2 adiciona a store `selfies` (imagens locais do Card Match). A v3 acrescenta
+ * as stores isoladas da economia do Memory Quest. A v4 ajusta o índice de
+ * `mqTransactions` para permitir pares e bônus na mesma sessão. A migração é
+ * aditiva: nenhuma store existente é recriada, limpa ou apagada, e o seed
+ * inicial só roda em bancos realmente novos (oldVersion < 1). A versão única
+ * vive em migrations.js.
  */
 const DB_VERSION = DB_VERSION_ATUAL;
 
@@ -35,7 +38,12 @@ const STORES = [
   'achievements',
   'settings',
   'metadata',
-  'selfies'
+  'selfies',
+  // Economia isolada do Memory Quest. Nenhuma destas stores é usada por
+  // wallet.js, transactions.js ou pelo Plinko.
+  'mqWallet',
+  'mqTransactions',
+  'mqSessions'
 ];
 
 // Única instância da conexão (singleton)
@@ -83,8 +91,8 @@ function openDatabase() {
       const tx = event.target.transaction; // transação de versão já ativa
       setupStores(database);
       seedInitialData(database, tx, event.oldVersion);
-      // Hook central das migrações (hoje vazio; a store v2 é criada acima).
-      aplicarMigracoes(database, event.oldVersion ?? 0);
+      // Migrações que precisam da transação de upgrade ativa (v4).
+      aplicarMigracoes(database, tx, event.oldVersion ?? 0);
     };
   });
 
@@ -126,6 +134,23 @@ function setupStores(database) {
     if (storeName === 'selfies') {
       store.createIndex('createdAt', 'createdAt', { unique: false });
       store.createIndex('ativa', 'ativa', { unique: false });
+    }
+    if (storeName === 'mqWallet') {
+      store.createIndex('atualizadoEm', 'atualizadoEm', { unique: false });
+    }
+    if (storeName === 'mqTransactions') {
+      store.createIndex('walletId', 'walletId', { unique: false });
+      store.createIndex('tipo', 'tipo', { unique: false });
+      store.createIndex('createdAt', 'createdAt', { unique: false });
+      // `sessionId` NÃO é único aqui: pares e bônus da mesma vitória coexistem.
+      // A idempotência é garantida por `mqSessions.sessionId` (índice único).
+      store.createIndex('sessionId', 'sessionId', { unique: false });
+      store.createIndex('sessionIdTipo', ['sessionId', 'tipo'], { unique: true });
+    }
+    if (storeName === 'mqSessions') {
+      store.createIndex('sessionId', 'sessionId', { unique: true });
+      store.createIndex('liquidadoEm', 'liquidadoEm', { unique: false });
+      store.createIndex('dificuldade', 'dificuldade', { unique: false });
     }
   });
 }
@@ -190,8 +215,26 @@ function seedInitialData(database, tx, oldVersion) {
     });
   }
 
-  if (versaoAnterior < 2) {
-    // Atualiza apenas o número da versão no metadata já existente.
+  if (versaoAnterior < 3) {
+    // Carteira isolada do Memory Quest: criada uma única vez, sem compartilhar
+    // saldo, transações ou chaves com a carteira legada do Plinko.
+    const mqWalletStore = tx.objectStore('mqWallet');
+    const consulta = mqWalletStore.getAll();
+    consulta.onsuccess = () => {
+      if ((consulta.result || []).length) return;
+      mqWalletStore.add({
+        id: 1,
+        saldo: 0,
+        totalConquistado: 0,
+        totalLiquido: 0,
+        atualizadoEm: Date.now()
+      });
+    };
+  }
+
+  if (versaoAnterior < DB_VERSION) {
+    // Atualiza apenas o número da versão no metadata já existente. Em bancos
+    // novos o registro acabou de ser criado com DB_VERSION; o put é idempotente.
     const metadataStore = tx.objectStore('metadata');
     const consulta = metadataStore.getAll();
     consulta.onsuccess = () => {

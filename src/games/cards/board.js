@@ -6,6 +6,10 @@
  *
  * `criarSessao()` adiciona gerenciamento de timers injetáveis, permitindo
  * testar a limpeza de eventos/temporizadores ao sair do jogo.
+ *
+ * O cronômetro oficial NÃO começa em `criarSessao()`: a prévia obrigatória
+ * acontece antes da partida. O integrador chama `iniciarCronometro()` quando
+ * as cartas são viradas para baixo e a interação é liberada.
  */
 
 import { embaralhar } from './cards-data.js';
@@ -245,7 +249,9 @@ export function criarSessao(config, opcoes = {}) {
   const partida = criarPartida(config, { rng: opcoes.rng });
   const temporizadores = new Set();
   let destruida = false;
-  let inicio = agora();
+  // null = prévia em andamento; o tempo oficial só começa quando o integrador
+  // chamar iniciarCronometro() após a prévia.
+  let inicio = null;
 
   function emitir(nome, payload) {
     if (typeof callbacks[nome] === 'function' && !destruida) {
@@ -299,7 +305,7 @@ export function criarSessao(config, opcoes = {}) {
   function reiniciar(novaConfig = config) {
     limparTemporizadores();
     destruida = false;
-    inicio = agora();
+    inicio = null;
     const estado = partida.reiniciar(novaConfig);
     emitir('onReiniciado', estado);
     return estado;
@@ -315,7 +321,14 @@ export function criarSessao(config, opcoes = {}) {
     limparTemporizadores();
   }
 
+  /** Inicia o cronômetro oficial uma única vez por partida. */
+  function iniciarCronometro() {
+    if (inicio === null) inicio = agora();
+    return inicio;
+  }
+
   function tempoDecorrido() {
+    if (inicio === null) return 0;
     return Math.max(0, Math.floor((agora() - inicio) / 1000));
   }
 
@@ -346,9 +359,11 @@ export function criarSessao(config, opcoes = {}) {
     selecionar,
     reiniciar,
     destruir,
+    iniciarCronometro,
     estado: () => partida.estado(),
     estatisticas,
     tempoDecorrido,
+    get cronometroAtivo() { return inicio !== null; },
     get destruida() { return destruida; },
     get temporizadoresPendentes() { return temporizadores.size; }
   };

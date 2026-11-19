@@ -4,7 +4,7 @@
  * Compatível com subdiretórios do GitHub Pages (usando self.registration.scope).
  */
 
-const CACHE_NAME = 'memory-quest-v12';
+const CACHE_NAME = 'memory-quest-v19';
 const OFFLINE_URL = './index.html';
 
 // Arquivos essenciais para funcionamento offline (caminhos relativos ao escopo do SW)
@@ -12,6 +12,22 @@ const ESSENTIAL_ASSETS = [
   './',
   './index.html',
   './manifest.json',
+  './assets/icons/icon-72.png',
+  './assets/icons/icon-96.png',
+  './assets/icons/icon-128.png',
+  './assets/icons/icon-144.png',
+  './assets/icons/icon-152.png',
+  './assets/icons/icon-192.png',
+  './assets/icons/icon-384.png',
+  './assets/icons/icon-512.png',
+  './assets/icons/icon-72-maskable.png',
+  './assets/icons/icon-96-maskable.png',
+  './assets/icons/icon-128-maskable.png',
+  './assets/icons/icon-144-maskable.png',
+  './assets/icons/icon-152-maskable.png',
+  './assets/icons/icon-192-maskable.png',
+  './assets/icons/icon-384-maskable.png',
+  './assets/icons/icon-512-maskable.png',
   './styles/main.css',
   './src/app/main.js',
   './src/core/database.js',
@@ -20,13 +36,18 @@ const ESSENTIAL_ASSETS = [
   './src/core/transactions.js',
   './src/core/backup.js',
   './src/core/game-stats.js',
+  './src/core/stats-insights.js',
   './src/core/settings.js',
   './src/core/profile.js',
   './src/core/selfies.js',
+  './src/core/mq-economy.js',
   './src/app/router.js',
   './src/ui/panels.js',
+  './src/ui/charts.js',
   './src/ui/profile.js',
   './src/games/cards/index.js',
+  './src/games/cards/recompensas.js',
+  './src/games/cards/previa.js',
   './src/games/cards/board.js',
   './src/games/cards/cards-data.js',
   './src/games/cards/expanded.js',

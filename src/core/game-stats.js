@@ -9,8 +9,10 @@
  */
 
 import { getAll, put, count } from './database.js';
+import { DESAFIOS_EXPANDIDO } from '../games/cards/expanded.js';
 
 const JOGO_PADRAO = 'cards';
+const IDS_DESAFIOS_CONHECIDOS = new Set(DESAFIOS_EXPANDIDO.map((desafio) => desafio.id));
 
 /**
  * Registra uma partida concluída (ou abandonada).
@@ -69,6 +71,49 @@ async function listarPartidas(jogo = JOGO_PADRAO, modo = null) {
 async function contarPartidas(jogo = JOGO_PADRAO) {
   const todas = await getAll('matches');
   return todas.filter((partida) => !jogo || partida.jogo === jogo).length;
+}
+
+/**
+ * Uma partida antiga pode não ter `concluida` ou `cheat`. Nesse caso, a
+ * vitória registrada e a ausência de CHEAT explícito são suficientes para
+ * considerar os desafios persistidos como conquistas válidas.
+ */
+function partidaElegivelParaConquista(partida) {
+  if (!partida || partida.vitoria !== true || partida.concluida === false) return false;
+  const cheat = partida.cheat;
+  return cheat == null || cheat === '' || cheat === false || cheat === 'normal';
+}
+
+/**
+ * Lista os desafios reais concluídos ao menos uma vez, na ordem canônica.
+ * IDs desconhecidos, entradas incompletas e vitórias com CHEAT são ignorados.
+ * A deduplicação por id evita contar a mesma conquista em partidas repetidas.
+ */
+async function listarConquistasDesbloqueadas() {
+  const partidas = await listarPartidas(JOGO_PADRAO);
+  const ids = new Set();
+
+  for (const partida of partidas) {
+    if (!partidaElegivelParaConquista(partida)) continue;
+    const desafios = Array.isArray(partida.desafios) ? partida.desafios : [];
+    for (const desafio of desafios) {
+      if (!desafio || typeof desafio.id !== 'string' || desafio.concluido !== true) continue;
+      if (!IDS_DESAFIOS_CONHECIDOS.has(desafio.id)) continue;
+      ids.add(desafio.id);
+    }
+  }
+
+  return DESAFIOS_EXPANDIDO
+    .filter((desafio) => ids.has(desafio.id))
+    .map(({ id, descricao }) => ({ id, descricao }));
+}
+
+/**
+ * Total de conquistas distintas já desbloqueadas no modo Expandido.
+ */
+async function contarConquistasDesbloqueadas() {
+  const conquistas = await listarConquistasDesbloqueadas();
+  return conquistas.length;
 }
 
 /**
@@ -146,6 +191,8 @@ export {
   registrarPartida,
   listarPartidas,
   contarPartidas,
+  listarConquistasDesbloqueadas,
+  contarConquistasDesbloqueadas,
   obterEstatisticas,
   JOGO_PADRAO
 };

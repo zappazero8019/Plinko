@@ -49,14 +49,18 @@ async function obterRegistro() {
 export async function obterPerfil() {
   try {
     const registro = await obterRegistro();
+    // `perfilExcluido` sinaliza a ausência intencional de identidade: o campo
+    // `nome` fica vazio de propósito até que um novo nome seja salvo.
+    const excluido = Boolean(registro?.perfilExcluido);
     return {
       id: registro?.id ?? null,
-      nome: normalizarNomePerfil(registro?.nome),
+      nome: excluido ? '' : normalizarNomePerfil(registro?.nome),
       idExterno: registro?.idExterno ?? null,
       criadoEm: Number(registro?.criadoEm) || null,
       atualizadoEm: Number(registro?.atualizadoEm) || null,
-      avatar: normalizarAvatarPerfil(registro?.avatar),
-      tema: typeof registro?.tema === 'string' ? registro.tema : TEMA_PADRAO
+      avatar: excluido ? null : normalizarAvatarPerfil(registro?.avatar),
+      tema: typeof registro?.tema === 'string' ? registro.tema : TEMA_PADRAO,
+      excluido
     };
   } catch (err) {
     console.warn('[profile] Falha ao ler perfil:', err);
@@ -67,7 +71,8 @@ export async function obterPerfil() {
       criadoEm: null,
       atualizadoEm: null,
       avatar: null,
-      tema: TEMA_PADRAO
+      tema: TEMA_PADRAO,
+      excluido: false
     };
   }
 }
@@ -95,6 +100,40 @@ export async function salvarPerfil(patch = {}) {
     if (Object.prototype.hasOwnProperty.call(patch, 'avatar')) {
       proximo.avatar = normalizarAvatarPerfil(patch.avatar);
     }
+    // Salvar qualquer nome recria a identidade explicitamente excluída.
+    if (Object.prototype.hasOwnProperty.call(patch, 'nome')) {
+      delete proximo.perfilExcluido;
+    }
+    delete proximo.excluido;
+    const id = await put('profile', proximo);
+    return { ...proximo, id };
+  });
+  filaPerfil = escrita.catch(() => {});
+  return escrita;
+}
+
+/**
+ * Exclusão pontual do perfil: apaga somente nome, avatar e foto.
+ *
+ * Tudo o mais permanece no mesmo registro — id, idExterno, criação, tema,
+ * conquestas, progresso, selfies, estatísticas, configurações e carteiras vivem
+ * em stores separadas e não são tocadas. Não há limpeza completa automática.
+ */
+export async function excluirPerfil() {
+  const escrita = filaPerfil.then(async () => {
+    const registro = await obterRegistro();
+    const atual = await obterPerfil();
+    const proximo = {
+      ...(registro || {}),
+      ...atual,
+      id: registro?.id ?? 1,
+      criadoEm: atual.criadoEm || Date.now(),
+      nome: '',
+      avatar: null,
+      perfilExcluido: true,
+      atualizadoEm: Date.now()
+    };
+    delete proximo.excluido;
     const id = await put('profile', proximo);
     return { ...proximo, id };
   });

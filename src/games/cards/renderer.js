@@ -38,6 +38,12 @@ function pct(valor, total) {
   return `${(valor / total) * 100}%`;
 }
 
+/** Números da economia do Memory Quest: nunca negativos, NaN ou decimais. */
+function formatarQuantidadeMQ(valor) {
+  const numero = Number(valor);
+  return String(Number.isFinite(numero) ? Math.max(0, Math.floor(numero)) : 0);
+}
+
 /** Áudio procedural (sem arquivos externos, sem assets copiados). */
 function criarAudio() {
   let ctx = null;
@@ -217,6 +223,14 @@ function normalizarAmpliacao(valor) {
   return MODOS_AMPLIACAO.has(valor) ? valor : 'original';
 }
 
+/** Espelha settings.js sem acoplar o renderer ao IndexedDB. */
+function normalizarTamanhoAmpliacao(valor) {
+  const numero = Number(valor);
+  if (!Number.isFinite(numero) || numero <= 0) return 120;
+  const passos = Math.round(numero / 5);
+  return Math.min(30, Math.max(20, passos)) * 5;
+}
+
 /** Normalização local da quantidade de CHEAT (sem acoplar o renderer ao banco). */
 function quantidadeCheat(valor) {
   const numero = Number(valor);
@@ -244,8 +258,8 @@ function arquivoParaDataUrl(arquivo) {
 /**
  * @param {HTMLElement} root - elemento #cards-board
  * @param {object} callbacks - onIniciar, onVoltar, onTrocarDificuldade,
- *   onAlternarProgressao, onTrocarVisualizacaoCartas, onSelecionar,
- *   onReiniciar, onMenu
+ *   onAlternarProgressao, onTrocarVisualizacaoCartas,
+ *   onAlterarTamanhoAmpliacao, onSelecionar, onReiniciar, onMenu
  * @param {object} opcoes - agendador e duração da ampliação (injetáveis em testes)
  */
 export function criarRenderer(root, callbacks = {}, opcoes = {}) {
@@ -275,6 +289,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   let resultEl = null;
   let emApresentacao = false;
   let configAtiva = null;
+  let previaOverlayEl = null;
+  let previaContagemEl = null;
+  let previaBarraEl = null;
 
   // Estado exclusivo da ampliação visual.
   let ultimoSnapshot = null;
@@ -282,6 +299,11 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   let ampliacaoConteudoEl = null;
   let ampliacaoModo = 'original';
   let ampliacaoIdAtual = null;
+  let faceAmpliadaEl = null;
+  let dicaTamanhoEl = null;
+  // 100–150% em passos de 5%; padrão 120%. A escala é aplicada por CSS
+  // transform, sem tocar na geometria do grid nem nas cartas vizinhas.
+  let tamanhoAmpliacao = 120;
   let timerAmpliacao = null;
   let overlaySelfie = null;
 
@@ -317,9 +339,14 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     resultEl = null;
     emApresentacao = false;
     configAtiva = null;
+    previaOverlayEl = null;
+    previaContagemEl = null;
+    previaBarraEl = null;
     ultimoSnapshot = null;
     ampliacaoEl = null;
     ampliacaoConteudoEl = null;
+    faceAmpliadaEl = null;
+    dicaTamanhoEl = null;
     ampliacaoModo = 'original';
     ampliacaoIdAtual = null;
     overlaySelfie = null;
@@ -346,16 +373,19 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     dificuldades = [],
     nomesDificuldade = {},
     visualizacaoCartas = 'original',
+    tamanhoAmpliacaoCartas = 120,
     modalidade = 'pontuacao',
     cheat = { infinitas: false, personalizada: false, quantidade: 20 },
     audioPreferencias = { fx: true, bgm: true, volumeFx: 80, volumeBgm: 65 },
     selfies = [],
     selfiesAtivas = [],
+    saldoMQ = 0,
     estatisticasModalidade = null,
     foco = null
   } = {}) {
     if (!root) return;
     limpar();
+    tamanhoAmpliacao = normalizarTamanhoAmpliacao(tamanhoAmpliacaoCartas);
 
     if (foco === 'selfies') {
       mostrarGaleriaSelfies({ selfies, ativas: selfiesAtivas });
@@ -368,6 +398,11 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     menu.appendChild(badge(modo));
     menu.appendChild(el('p', 'cards__intro',
       'Jogo da Memória: mais cartas, desafios e progressão.'));
+
+    const saldoNode = el('div', 'cards__saldo-mq',
+      `🪙 SALDO MEMORY QUEST: ${formatarQuantidadeMQ(saldoMQ)}`);
+    saldoNode.dataset.saldoMq = String(formatarQuantidadeMQ(saldoMQ));
+    menu.appendChild(saldoNode);
 
     // Configurações do Jogo da Memória.
     {
@@ -382,6 +417,14 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         linha.appendChild(btn);
       }
       blocoDiff.appendChild(linha);
+      menu.appendChild(blocoDiff);
+
+      // Controles avançados ficam recolhidos: continuam no DOM e funcionais,
+      // mas fora do caminho principal (dificuldade → iniciar partida).
+      const avancado = el('details', 'cards__avancado');
+      avancado.appendChild(el('summary', '', '⚙ Opções avançadas'));
+      const corpoAvancado = el('div', 'cards__avancado-corpo');
+      avancado.appendChild(corpoAvancado);
 
       const prog = botao(
         `Progressão automática: ${progressao ? 'ligada' : 'desligada'}`,
@@ -389,8 +432,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         () => { audio.som('mover'); callbacks.onAlternarProgressao?.(); }
       );
       prog.dataset.progressao = String(progressao);
-      blocoDiff.appendChild(prog);
-      menu.appendChild(blocoDiff);
+      corpoAvancado.appendChild(prog);
 
       const blocoVisual = el('div', 'cards__visual');
       blocoVisual.appendChild(el('h4', 'cards__subtitulo', 'Visualização das cartas'));
@@ -417,7 +459,10 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         opcoesVisual.appendChild(btn);
       }
       blocoVisual.appendChild(opcoesVisual);
-      menu.appendChild(blocoVisual);
+      dicaTamanhoEl = el('p', 'cards__visual-dica',
+        `Tamanho da carta ampliada: ${tamanhoAmpliacao}%. Ajuste aqui ou em Configurações → Visual.`);
+      blocoVisual.appendChild(dicaTamanhoEl);
+      corpoAvancado.appendChild(blocoVisual);
 
       const blocoModalidade = el('div', 'cards__bloco cards__modalidade');
       blocoModalidade.appendChild(el('h4', 'cards__subtitulo', 'Modalidade'));
@@ -437,7 +482,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         linhaModalidade.appendChild(btn);
       }
       blocoModalidade.appendChild(linhaModalidade);
-      menu.appendChild(blocoModalidade);
+      corpoAvancado.appendChild(blocoModalidade);
 
       if (modalidade === 'tentativas') {
         const blocoCheat = el('div', 'cards__bloco cards__cheat');
@@ -481,7 +526,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         blocoCheat.appendChild(campo);
         blocoCheat.appendChild(el('p', 'cards__dica',
           'Prioridade: infinitas → personalizada → padrão da dificuldade. Vale somente para novas partidas.'));
-        menu.appendChild(blocoCheat);
+        corpoAvancado.appendChild(blocoCheat);
       }
 
       const blocoAudio = el('div', 'cards__bloco cards__audio-config');
@@ -533,7 +578,8 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         linhasVolume.appendChild(linha);
       }
       blocoAudio.appendChild(linhasVolume);
-      menu.appendChild(blocoAudio);
+      corpoAvancado.appendChild(blocoAudio);
+      menu.appendChild(avancado);
 
       const blocoSelfies = el('div', 'cards__bloco cards__selfies-resumo');
       blocoSelfies.appendChild(el('h4', 'cards__subtitulo', 'MINHAS CARTAS'));
@@ -789,32 +835,43 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     aviso.textContent = mensagem;
   }
 
-  function criarTopo(config, tituloExtra) {
+  function criarTopo(config, tituloExtra, opcoes = {}) {
     const topo = el('div', 'cards__topo');
     topo.appendChild(badge(config.modo));
     topo.appendChild(el('span', 'cards__modo-titulo',
       tituloExtra || config.titulo || 'Memory Quest'));
 
+    // Áudio permanece configurável no menu (Opções avançadas); a partida mostra
+    // apenas saídas secundárias, mantendo o tabuleiro como foco.
     const botoesTopo = el('div', 'cards__topo-botoes');
-    const fx = botao(`♪ FX: ${audio.efeitosAtivos ? 'on' : 'off'}`, 'cards__audio-btn', () => {
-      const ativo = audio.alternarEfeitos();
-      fx.textContent = `♪ FX: ${ativo ? 'on' : 'off'}`;
-      fx.setAttribute('aria-pressed', String(ativo));
-      callbacks.onAlternarAudio?.('fx', ativo);
-    });
-    fx.dataset.audio = 'fx';
-    fx.setAttribute('aria-pressed', String(audio.efeitosAtivos));
-    const bgm = botao(`♫ BGM: ${audio.bgmAtiva ? 'on' : 'off'}`, 'cards__audio-btn', () => {
-      const ativo = audio.alternarBgm();
-      bgm.textContent = `♫ BGM: ${ativo ? 'on' : 'off'}`;
-      bgm.setAttribute('aria-pressed', String(ativo));
-      callbacks.onAlternarAudio?.('bgm', ativo);
-    });
-    bgm.dataset.audio = 'bgm';
-    bgm.setAttribute('aria-pressed', String(audio.bgmAtiva));
-    botoesTopo.appendChild(fx);
-    botoesTopo.appendChild(bgm);
-    botoesTopo.appendChild(botao('Configurações', 'btn btn--text', () => callbacks.onMenu?.()));
+    if (opcoes.previa) {
+      botoesTopo.appendChild(botao('⟳ Reiniciar', 'btn btn--text cards__previa-reiniciar',
+        () => callbacks.onReiniciar?.()));
+    }
+    // Controle da própria partida: altera a escala da face ampliada sem sair da
+    // rodada, sem recriar o tabuleiro e sem reiniciar o timer. Presente já na
+    // prévia para que o fim dela não desloque o tabuleiro.
+    if (config.modo === 'expandido') {
+      const controleZoom = el('label', 'cards__zoom-controle');
+      const rotuloZoom = el('span', 'cards__zoom-rotulo', `Carta ${tamanhoAmpliacao}%`);
+      const rangeZoom = document.createElement('input');
+      rangeZoom.type = 'range';
+      rangeZoom.min = '100';
+      rangeZoom.max = '150';
+      rangeZoom.step = '5';
+      rangeZoom.value = String(tamanhoAmpliacao);
+      rangeZoom.dataset.ampliacaoTamanhoPartida = 'true';
+      rangeZoom.setAttribute('aria-label', 'Tamanho da carta ampliada');
+      rangeZoom.addEventListener('input', () => {
+        const novo = normalizarTamanhoAmpliacao(rangeZoom.value);
+        rotuloZoom.textContent = `Carta ${novo}%`;
+        callbacks.onAlterarTamanhoAmpliacao?.(novo);
+      });
+      controleZoom.appendChild(rotuloZoom);
+      controleZoom.appendChild(rangeZoom);
+      botoesTopo.appendChild(controleZoom);
+    }
+    botoesTopo.appendChild(botao('⚙ Configurações', 'btn btn--text', () => callbacks.onMenu?.()));
     botoesTopo.appendChild(botao('← Coleção', 'btn btn--text', () => callbacks.onVoltar?.()));
     topo.appendChild(botoesTopo);
     return topo;
@@ -825,17 +882,36 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     const valorTentativas = config.modalidade === 'tentativas'
       ? (config.tentativasInfinitas ? 'TENTATIVAS: ∞' : `TENTATIVAS: ${config.tentativasIniciais ?? 0}`)
       : 'Tentativas 0';
+    // `titulo` pode trazer o identificador interno ("Expandido · Normal");
+    // no HUD mostramos apenas o nome da dificuldade.
+    const nomeDificuldade = String(config.titulo || '—').split('·').pop().trim();
     const campos = [
+      ['dificuldade', `DIFICULDADE: ${nomeDificuldade}`],
+      ['modalidade', `MODALIDADE: ${config.modalidade === 'tentativas' ? 'Tentativas' : 'Pontuação'}`],
       ['pares', `Pares 0/${config.totalPares}`],
       ['tentativas', valorTentativas],
       ['erros', 'Erros 0'],
-      ['tempo', 'Tempo 00:00']
+      ['tempo', 'Tempo 00:00'],
+      ['saldo', `SALDO MQ: ${formatarQuantidadeMQ(config.saldoMQ)}`],
+      ['moedas', 'MOEDAS: 0'],
+      ['sequencia', 'SEQ: 0'],
+      ['multiplicador', 'MULT: x1']
     ];
+    // O contador numérico de pontos permanece exclusivo do Modo Pontuação.
+    if (config.modalidade === 'pontuacao' || config.pontuacao != null) {
+      campos.push(['pontuacao', `PONTOS: ${formatarQuantidadeMQ(config.pontuacao)}`]);
+    }
     for (const [chave, texto] of campos) {
-      const classe = chave === 'tentativas' && config.modalidade === 'tentativas'
-        ? 'cards__hud-item cards__hud-item--tentativas'
-        : 'cards__hud-item';
-      const item = el('div', classe, texto);
+      const classes = ['cards__hud-item'];
+      if (chave === 'tentativas' && config.modalidade === 'tentativas') {
+        classes.push('cards__hud-item--tentativas');
+      } else if ([
+        'dificuldade', 'modalidade', 'pontuacao',
+        'saldo', 'moedas', 'sequencia', 'multiplicador'
+      ].includes(chave)) {
+        classes.push(`cards__hud-item--${chave}`);
+      }
+      const item = el('div', classes.join(' '), texto);
       item.dataset.hud = chave;
       hud[chave] = item;
       hudEl.appendChild(item);
@@ -852,8 +928,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     // `children` é HTMLCollection no navegador (sem .filter) e array no mock
     // dos testes. Array.from cobre os dois casos.
     const restantes = Array.from(pai.children || []).filter((filho) => filho !== node);
+    // No DOM real `parentNode` é somente leitura; `replaceChildren` já desanexa
+    // o nó (o mock dos testes faz o mesmo ao limpar `parentNode` dos filhos).
     pai.replaceChildren(...restantes);
-    node.parentNode = null;
   }
 
   /** Só devolve cartas que o fluxo normal já revelou. */
@@ -905,6 +982,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     const nome = def.nome || `Carta ${carta.id + 1}`;
     const face = el('div', 'cards__ampliacao-carta');
     face.style.setProperty('--card-color', def.cor || '#9a9ab8');
+    face.style.setProperty('--ampliacao-escala', String(tamanhoAmpliacao / 100));
     face.dataset.ampliacaoId = String(carta.id);
     face.setAttribute('aria-label', `Carta ampliada: ${nome}`);
     face.appendChild(criarConteudoFrente(def, carta));
@@ -945,6 +1023,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   function limparConteudoAmpliacao() {
     cancelarTimerAmpliacao();
     ampliacaoIdAtual = null;
+    faceAmpliadaEl = null;
     if (ampliacaoConteudoEl) {
       ampliacaoConteudoEl.replaceChildren();
       if (ampliacaoEl?.dataset?.ampliacao === 'fixa') {
@@ -959,7 +1038,8 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   function mostrarAmpliacao(carta, modo) {
     if (!ampliacaoEl || !ampliacaoConteudoEl) return;
     ampliacaoConteudoEl.replaceChildren();
-    ampliacaoConteudoEl.appendChild(criarFaceAmpliada(carta));
+    faceAmpliadaEl = criarFaceAmpliada(carta);
+    ampliacaoConteudoEl.appendChild(faceAmpliadaEl);
     ampliacaoIdAtual = carta.id;
 
     if (modo !== 'temporaria') return;
@@ -979,6 +1059,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     ampliacaoEl = null;
     ampliacaoConteudoEl = null;
     ampliacaoIdAtual = null;
+    faceAmpliadaEl = null;
     ampliacaoModo = modo;
     if (modo === 'original' || config?.modo !== 'expandido') return;
 
@@ -998,6 +1079,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
 
   function atualizarAmpliacao(snapshot, config) {
     ultimoSnapshot = snapshot;
+    if (config?.tamanhoAmpliacaoCartas !== undefined) {
+      tamanhoAmpliacao = normalizarTamanhoAmpliacao(config.tamanhoAmpliacaoCartas);
+    }
     const modo = config?.modo === 'expandido'
       ? normalizarAmpliacao(config.visualizacaoCartas)
       : 'original';
@@ -1032,6 +1116,23 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     configAtiva = { ...configAtiva, visualizacaoCartas: normalizado };
     reconstruirAreaAmpliacao(configAtiva, normalizado);
     if (ultimoSnapshot) atualizarAmpliacao(ultimoSnapshot, configAtiva);
+  }
+
+  /**
+   * Aplica o novo tamanho à carta já ampliada sem recriar a área, reiniciar a
+   * partida ou tocar no grid. Válido nos três modos existentes.
+   */
+  function definirTamanhoAmpliacao(valor) {
+    const normalizado = normalizarTamanhoAmpliacao(valor);
+    if (normalizado === tamanhoAmpliacao) return normalizado;
+    tamanhoAmpliacao = normalizado;
+    if (configAtiva) configAtiva.tamanhoAmpliacaoCartas = normalizado;
+    faceAmpliadaEl?.style.setProperty('--ampliacao-escala', String(normalizado / 100));
+    if (dicaTamanhoEl) {
+      dicaTamanhoEl.textContent =
+        `Tamanho da carta ampliada: ${normalizado}%. Ajuste aqui ou em Configurações → Visual.`;
+    }
+    return normalizado;
   }
 
   function posicionarSmb3(node, carta, indice) {
@@ -1093,6 +1194,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
 
     if (!somenteLeitura) {
       escutar(btn, 'click', () => {
+        // Defesa dupla: o botão já vem desativado na prévia, mas um clique
+        // sintético/programático não pode iniciar tentativa nem seleção.
+        if (emApresentacao || btn.disabled) return;
         const revelada = cartaVisivel(ultimoSnapshot, carta.id);
         if (
           configAtiva?.modo === 'expandido' &&
@@ -1197,6 +1301,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     if (!root) return;
     limpar();
     configAtiva = config;
+    tamanhoAmpliacao = normalizarTamanhoAmpliacao(
+      config?.tamanhoAmpliacaoCartas ?? tamanhoAmpliacao
+    );
     emApresentacao = true;
     simbolos = new Map((config.simbolos || []).map((item) => [item.id, item]));
 
@@ -1225,14 +1332,20 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     root.appendChild(game);
   }
 
-  function mostrarPartida(config, snapshot) {
+  /** Estrutura comum: a mesma partida é reaproveitada na prévia e no jogo. */
+  function criarEstruturaPartida(config, snapshot, { previa = false } = {}) {
     if (!root) return;
     limpar();
     configAtiva = config;
+    tamanhoAmpliacao = normalizarTamanhoAmpliacao(
+      config?.tamanhoAmpliacaoCartas ?? tamanhoAmpliacao
+    );
+    emApresentacao = previa;
     simbolos = new Map((config.simbolos || []).map((item) => [item.id, item]));
 
     const game = el('section', 'cards__game');
-    game.appendChild(criarTopo(config));
+    if (previa) game.classList.add('cards__game--previa');
+    game.appendChild(criarTopo(config, previa ? 'Memorize as cartas' : null, { previa }));
 
     if (config.tempoAlvo) {
       game.appendChild(el('p', 'cards__meta',
@@ -1241,6 +1354,8 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
 
     game.appendChild(criarHud(config));
 
+    // Os listeners já são instalados, mas ficam desativados enquanto a prévia
+    // está ativa. Assim as mesmas cartas viram para baixo com animação ao fim.
     boardEl = criarBoard(config, snapshot, false);
     game.appendChild(boardEl);
 
@@ -1255,10 +1370,96 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
 
     root.appendChild(game);
 
-    reconstruirAreaAmpliacao(config, normalizarAmpliacao(config.visualizacaoCartas));
-
     cursorId = ordemIds[0] ?? null;
     cartasEls.get(cursorId)?.classList.add('cards__card--cursor');
+  }
+
+  /**
+   * Prévia obrigatória: todas as cartas abertas, mensagem central, contagem
+   * regressiva e indicador de tempo restante. Nenhuma tentativa/erro é tocado.
+   */
+  function mostrarPrevia(config, snapshot, opcoes = {}) {
+    if (!root) return;
+    const duracaoMs = Math.max(
+      0,
+      Number(opcoes.duracaoMs ?? config.tempoPreviaMs ?? config.tempoMemorizacaoMs ?? 0) || 0
+    );
+    const mensagem = opcoes.mensagem || 'MEMORIZE AS CARTAS!';
+    criarEstruturaPartida(config, snapshot, { previa: true });
+    if (!boardEl) return;
+
+    const game = boardEl.parentNode;
+    const aviso = el('div', 'cards__previa');
+    aviso.dataset.previa = 'true';
+    aviso.setAttribute('role', 'status');
+    aviso.setAttribute('aria-live', 'polite');
+    aviso.setAttribute('aria-atomic', 'true');
+    aviso.appendChild(el('div', 'cards__previa-mensagem', mensagem));
+    previaContagemEl = el('div', 'cards__previa-contagem',
+      String(Math.ceil(duracaoMs / 1000)));
+    previaContagemEl.setAttribute('aria-label', 'Segundos restantes');
+    aviso.appendChild(previaContagemEl);
+
+    const barra = el('div', 'cards__memoria cards__memoria--previa');
+    barra.setAttribute('role', 'progressbar');
+    barra.setAttribute('aria-label', 'Tempo restante da prévia');
+    barra.setAttribute('aria-valuemin', '0');
+    barra.setAttribute('aria-valuemax', '100');
+    previaBarraEl = el('div', 'cards__memoria-barra cards__memoria-barra--previa');
+    barra.appendChild(previaBarraEl);
+    aviso.appendChild(barra);
+    game.appendChild(aviso);
+    previaOverlayEl = aviso;
+
+    boardEl.classList.add('cards__board--bloqueado');
+    for (const carta of snapshot.cartas) {
+      const no = cartasEls.get(carta.id);
+      if (!no) continue;
+      no.classList.add('cards__card--revelada');
+      no.disabled = true;
+    }
+    feedback(mensagem, 'previa');
+    atualizarPrevia(duracaoMs, duracaoMs);
+  }
+
+  /** Atualiza apenas a apresentação da prévia; nunca toca no estado da partida. */
+  function atualizarPrevia(restanteMs, duracaoMs) {
+    const restante = Math.max(0, restanteMs);
+    const segundos = Math.ceil(restante / 1000);
+    if (previaContagemEl) {
+      previaContagemEl.textContent = String(segundos);
+      previaContagemEl.classList.toggle('cards__previa-contagem--urgente', segundos <= 2);
+    }
+    if (previaBarraEl) {
+      const fracao = duracaoMs > 0 ? Math.min(1, Math.max(0, restante / duracaoMs)) : 0;
+      previaBarraEl.style.setProperty('--previa-fracao', String(fracao));
+      previaBarraEl.setAttribute('aria-valuenow', String(Math.round(fracao * 100)));
+    }
+  }
+
+  /** Encerra a prévia: vira as cartas, libera a interação e mostra o HUD real. */
+  function concluirPrevia(config, snapshot) {
+    if (!boardEl) return;
+    emApresentacao = false;
+    if (previaOverlayEl) removerNo(previaOverlayEl);
+    previaOverlayEl = null;
+    previaContagemEl = null;
+    previaBarraEl = null;
+    boardEl.classList.remove('cards__board--bloqueado');
+
+    reconstruirAreaAmpliacao(config, normalizarAmpliacao(config.visualizacaoCartas));
+    instalarTeclado(config);
+    // O snapshot ainda tem todas as cartas viradas: atualizar() remove a classe
+    // --revelada e o CSS 3D faz a virada sem recriar o tabuleiro.
+    atualizar(snapshot, config, 0);
+    feedback('Selecione duas cartas');
+    audio.som('select');
+  }
+
+  function mostrarPartida(config, snapshot) {
+    if (!root) return;
+    criarEstruturaPartida(config, snapshot);
+    reconstruirAreaAmpliacao(config, normalizarAmpliacao(config.visualizacaoCartas));
     instalarTeclado(config);
     atualizar(snapshot, config, 0);
   }
@@ -1286,6 +1487,25 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
         : `Tentativas ${snapshot.tentativas}`;
     }
     if (hud.erros) hud.erros.textContent = `Erros ${snapshot.erros}`;
+
+    const economia = snapshot.economia || config.economia;
+    if (hud.saldo) {
+      hud.saldo.textContent = `SALDO MQ: ${formatarQuantidadeMQ(economia?.saldo ?? config.saldoMQ)}`;
+    }
+    if (hud.moedas) {
+      hud.moedas.textContent = `MOEDAS: ${formatarQuantidadeMQ(economia?.moedasPares)}`;
+    }
+    if (hud.sequencia) {
+      hud.sequencia.textContent = `SEQ: ${formatarQuantidadeMQ(economia?.sequenciaFinal)}`;
+    }
+    if (hud.multiplicador) {
+      hud.multiplicador.textContent = `MULT: x${formatarQuantidadeMQ(economia?.multiplicadorAtual || 1)}`;
+    }
+    if (hud.pontuacao && economia?.pontuacao != null) {
+      hud.pontuacao.textContent = `PONTOS: ${formatarQuantidadeMQ(economia.pontuacao)}`;
+    } else if (hud.pontuacao && snapshot.pontuacao != null) {
+      hud.pontuacao.textContent = `PONTOS: ${snapshot.pontuacao}`;
+    }
     if (hud.tempo) {
       hud.tempo.textContent = config.modo === 'expandido'
         ? `Tempo ${formatarTempo(tempoSegundos)}`
@@ -1308,6 +1528,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     botoes = [],
     modo = null,
     dificuldade = null,
+    economia = null,
     somVitoria = true,
     tocarSom = true
   } = {}) {
@@ -1326,6 +1547,29 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     const lista = el('ul', 'cards__result-linhas');
     for (const linha of linhas) lista.appendChild(el('li', '', String(linha)));
     resultEl.appendChild(lista);
+
+    if (economia) {
+      const painel = el('div', 'cards__result-economia');
+      const itens = [
+        ['moedas', `MOEDAS +${formatarQuantidadeMQ(economia.moedasPares)}`],
+        ['bonus', `BÔNUS +${formatarQuantidadeMQ(economia.bonus)}`],
+        ['total', `TOTAL +${formatarQuantidadeMQ(economia.total)}`],
+        ['saldo', `SALDO ${formatarQuantidadeMQ(economia.saldo)}`]
+      ];
+      if (economia.modalidade === 'pontuacao' && economia.pontuacao != null) {
+        itens.push(['pontos', `PONTOS ${formatarQuantidadeMQ(economia.pontuacao)}`]);
+      }
+      for (const [chave, texto] of itens) {
+        painel.appendChild(el('span', `cards__economia-item cards__economia-item--${chave}`, texto));
+      }
+      if (!economia.elegivel) {
+        painel.appendChild(el('span', 'cards__economia-bloqueio',
+          `🚫 RECOMPENSAS BLOQUEADAS: CHEAT${economia.motivoInelegibilidade
+            ? ` (${economia.motivoInelegibilidade})` : ''}`
+        ));
+      }
+      resultEl.appendChild(painel);
+    }
 
     if (desafios.length) {
       const chips = el('div', 'cards__desafios');
@@ -1364,6 +1608,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   return {
     mostrarMenu,
     mostrarApresentacao,
+    mostrarPrevia,
+    atualizarPrevia,
+    concluirPrevia,
     mostrarPartida,
     atualizar,
     feedback,
@@ -1371,6 +1618,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     esconderResultado,
     cancelarAmpliacao,
     definirVisualizacaoCartas,
+    definirTamanhoAmpliacao,
     mostrarSelfies: mostrarGaleriaSelfies,
     mostrarEditorSelfie,
     mostrarErroSelfie,
