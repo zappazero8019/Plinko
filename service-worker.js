@@ -4,7 +4,7 @@
  * Compatível com subdiretórios do GitHub Pages (usando self.registration.scope).
  */
 
-const CACHE_NAME = 'memory-quest-v19';
+const CACHE_NAME = 'memory-quest-v21';
 const OFFLINE_URL = './index.html';
 
 // Arquivos essenciais para funcionamento offline (caminhos relativos ao escopo do SW)
@@ -28,6 +28,8 @@ const ESSENTIAL_ASSETS = [
   './assets/icons/icon-192-maskable.png',
   './assets/icons/icon-384-maskable.png',
   './assets/icons/icon-512-maskable.png',
+  // Ícone original da habilidade Visão total (arquivo existente, não copiado).
+  './assets/icons/visao.png',
   './styles/main.css',
   './src/app/main.js',
   './src/core/database.js',
@@ -41,14 +43,19 @@ const ESSENTIAL_ASSETS = [
   './src/core/profile.js',
   './src/core/selfies.js',
   './src/core/mq-economy.js',
+  './src/core/mq-shop.js',
+  './src/core/mq-habilidade.js',
   './src/app/router.js',
+  './src/ui/components.js',
   './src/ui/panels.js',
   './src/ui/charts.js',
   './src/ui/profile.js',
+  './src/ui/shop.js',
   './src/games/cards/index.js',
   './src/games/cards/recompensas.js',
   './src/games/cards/previa.js',
   './src/games/cards/board.js',
+  './src/games/cards/visao-total.js',
   './src/games/cards/cards-data.js',
   './src/games/cards/expanded.js',
   './src/games/cards/renderer.js',

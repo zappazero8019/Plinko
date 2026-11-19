@@ -59,6 +59,31 @@ function inteiroSeguro(valor, fallback = 0, minimo = 0) {
   return Math.max(minimo, Math.floor(numeroSeguro(valor, fallback)));
 }
 
+/** Registros antigos sem inventário são lidos como estoque zero. */
+function normalizarHabilidadesMQ(valor) {
+  const objeto = valor && typeof valor === 'object' && !Array.isArray(valor) ? valor : {};
+  return { visaoTotal: inteiroSeguro(objeto.visaoTotal) };
+}
+
+/** Observadores da carteira MQ: todas as exibições reagem ao mesmo evento. */
+const observadoresCarteiraMQ = new Set();
+
+export function registrarObservadorCarteiraMQ(callback) {
+  if (typeof callback !== 'function') return () => {};
+  observadoresCarteiraMQ.add(callback);
+  return () => { observadoresCarteiraMQ.delete(callback); };
+}
+
+export function notificarCarteiraMQ() {
+  for (const observador of [...observadoresCarteiraMQ]) {
+    try {
+      observador();
+    } catch (err) {
+      console.warn('[mq] Falha ao notificar observador da carteira:', err);
+    }
+  }
+}
+
 function limitar(valor, minimo, maximo) {
   return Math.min(maximo, Math.max(minimo, valor));
 }
@@ -232,12 +257,14 @@ function requestPromise(request) {
   });
 }
 
-function estadoSeguro(registro) {
+export function estadoSeguro(registro) {
   return {
     id: MQ_WALLET_ID,
     saldo: inteiroSeguro(registro?.saldo),
     totalConquistado: inteiroSeguro(registro?.totalConquistado),
     totalLiquido: inteiroSeguro(registro?.totalLiquido),
+    totalGasto: inteiroSeguro(registro?.totalGasto),
+    habilidades: normalizarHabilidadesMQ(registro?.habilidades),
     atualizadoEm: inteiroSeguro(registro?.atualizadoEm)
   };
 }
@@ -364,5 +391,8 @@ export function liquidarSessaoMQ(dados = {}) {
         }, reject);
       }, reject);
     })
-  );
+  ).then((resultado) => {
+    if (resultado?.ok) notificarCarteiraMQ();
+    return resultado;
+  });
 }

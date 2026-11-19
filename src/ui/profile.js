@@ -14,7 +14,7 @@ import {
   NOME_MAXIMO
 } from '../core/profile.js';
 import { obterEstatisticas, contarPartidas } from '../core/game-stats.js';
-import { getEstado } from '../core/wallet.js';
+import { obterEstadoMQ } from '../core/mq-economy.js';
 
 function el(tag, classe, texto) {
   const no = document.createElement(tag);
@@ -85,7 +85,7 @@ export async function renderizarPerfil(root) {
   const [estatisticas, partidas, carteira] = await Promise.all([
     obterEstatisticas('cards'),
     contarPartidas('cards'),
-    getEstado()
+    obterEstadoMQ()
   ]);
 
   root.replaceChildren();

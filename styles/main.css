@@ -497,6 +497,115 @@ p { margin: 0 0 1rem; }
   font-size: 0.85rem;
 }
 
+/* Loja de habilidades — Fase 1 (Visão total) */
+.shop-root {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+}
+
+.shop__cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 2px solid var(--accent-3);
+}
+
+.shop__cabecalho .cards__titulo {
+  margin: 0;
+  color: var(--accent-2);
+  text-shadow: 0 0 14px var(--accent-2-glow);
+}
+
+.shop__saldo {
+  font-family: var(--font-pixel);
+  color: var(--accent);
+  font-size: 1rem;
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+.shop__dica {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.shop__grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 1rem;
+  width: 100%;
+}
+
+.shop-ability {
+  gap: 0.6rem;
+  border-color: var(--accent-3);
+  box-shadow: 0 0 18px rgba(167, 139, 250, 0.22),
+    inset 0 0 0 1px rgba(34, 211, 238, 0.18);
+}
+
+/* object-fit: contain preserva a proporção original do PNG de 6400×6400. */
+.shop-ability__icone {
+  display: block;
+  width: 96px;
+  height: 96px;
+  max-width: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  padding: 0.35rem;
+  border: 2px solid var(--accent);
+  background: rgba(8, 8, 20, 0.85);
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+.shop-ability__descricao {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.shop-ability__linhas {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.shop-ability__linha {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.shop-ability__rotulo {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.shop-ability__saldo { color: var(--accent); }
+.shop-ability__estoque { color: var(--accent-2); }
+
+.shop-ability__estado {
+  margin: 0;
+  min-height: 1em;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.shop-item__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 /* Perfil */
 .profile {
   display: flex;
@@ -747,6 +856,11 @@ p { margin: 0 0 1rem; }
   .nav__label { font-size: 0.48rem; }
   .nav__icon { font-size: 1.05rem; }
   .home__menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Loja em coluna única: nenhuma largura fixa pode estourar 360 px. */
+  .shop__grade { grid-template-columns: minmax(0, 1fr); }
+  .shop__cabecalho { align-items: flex-start; }
+  .shop-ability__icone { width: 72px; height: 72px; }
+  .shop-ability__linha { flex-wrap: wrap; }
 }
 
 /* ============================================================

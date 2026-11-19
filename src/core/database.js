@@ -227,6 +227,10 @@ function seedInitialData(database, tx, oldVersion) {
         saldo: 0,
         totalConquistado: 0,
         totalLiquido: 0,
+        // Inventário da Fase 1: um uso comprado por 100 moedas. Registros
+        // antigos sem estes campos continuam valendo estoque zero.
+        totalGasto: 0,
+        habilidades: { visaoTotal: 0 },
         atualizadoEm: Date.now()
       });
     };

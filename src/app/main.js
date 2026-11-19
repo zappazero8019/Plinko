@@ -15,6 +15,8 @@ import { openDatabase, requestPersistentStorage, verifyIntegrity } from '../core
 import {
   getEstado, getSaldo, getHistorico, addCoins, debitCoins
 } from '../core/wallet.js';
+import { obterEstadoMQ, registrarObservadorCarteiraMQ } from '../core/mq-economy.js';
+import { renderizarLoja, destruirLoja } from '../ui/shop.js';
 import { init as initRouter, navegarPara } from './router.js';
 import { downloadBackup, lerArquivoBackup, importarProgresso, validarEstrutura } from '../core/backup.js';
 import { init as plinkoInit, destroy as plinkoDestroy } from '../games/plinko/index.js';
@@ -46,11 +48,12 @@ function formatarMoeda(valor) {
 }
 
 /**
- * Atualiza a carteira visível no header e nos cards de status.
+ * Atualiza o cabeçalho e os cards de status com a carteira canônica do Memory
+ * Quest. A carteira legada `wallet` continua exclusiva do Plinko.
  */
 async function atualizarCarteiraUI() {
   try {
-    const estado = await getEstado();
+    const estado = await obterEstadoMQ();
     const saldoTexto = formatarMoeda(estado.saldo);
 
     if (walletAmountEl) walletAmountEl.textContent = saldoTexto;
@@ -230,7 +233,11 @@ async function init() {
     const integridade = await verifyIntegrity();
     console.log('[DB] Integridade:', integridade.ok ? 'ok' : 'falha', integridade);
 
-    // 4. Inicializa router
+    // 4. Toda alteração na carteira MQ (liquidação ou compra) atualiza o
+    //    cabeçalho, a home e o perfil sem recarregar nem trocar de tela.
+    registrarObservadorCarteiraMQ(() => { atualizarCarteiraUI(); });
+
+    // 5. Inicializa router
     initRouter((area, anterior, foco) => {
       // Atualiza a carteira sempre que entrar no início/perfil
       if (area === 'home' || area === 'profile') {
@@ -268,6 +275,13 @@ async function init() {
       if (area === 'stats') {
         renderizarEstatisticas(document.getElementById('stats-board'))
           .catch((err) => console.warn('[APP] Falha ao abrir estatísticas:', err));
+      }
+
+      if (area === 'shop') {
+        renderizarLoja(document.getElementById('shop-board'))
+          .catch((err) => console.warn('[APP] Falha ao abrir a loja:', err));
+      } else {
+        destruirLoja();
       }
     });
 

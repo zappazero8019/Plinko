@@ -19,6 +19,9 @@ function el(tag, classe = '', texto = '') {
   return node;
 }
 
+/** Ícone original da habilidade — reutilizado, sem cópia ou substituição. */
+const ICONE_VISAO_TOTAL = 'assets/icons/visao.png';
+
 /** Geometria do painel SMB3, confirmada na referência. */
 const PAINEL_SMB3 = Object.freeze({
   largura: 514,
@@ -284,6 +287,14 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   let cursorId = null;
   let seletorEl = null;
   let hud = {};
+  let saldoNode = null;
+  let botaoVisaoTotal = null;
+  let contadorVisaoTotal = null;
+  let estadoVisaoTotal = null;
+  let visaoTotalAtivo = false;
+  let visaoTotalRevelados = new Set();
+  let usosVisaoTotal = 0;
+  let ultimoTempoSegundos = 0;
   let boardEl = null;
   let feedbackEl = null;
   let resultEl = null;
@@ -334,6 +345,14 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     cursorId = null;
     seletorEl = null;
     hud = {};
+    saldoNode = null;
+    botaoVisaoTotal = null;
+    contadorVisaoTotal = null;
+    estadoVisaoTotal = null;
+    visaoTotalAtivo = false;
+    visaoTotalRevelados = new Set();
+    usosVisaoTotal = 0;
+    ultimoTempoSegundos = 0;
     boardEl = null;
     feedbackEl = null;
     resultEl = null;
@@ -399,10 +418,15 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     menu.appendChild(el('p', 'cards__intro',
       'Jogo da Memória: mais cartas, desafios e progressão.'));
 
-    const saldoNode = el('div', 'cards__saldo-mq',
+    saldoNode = el('div', 'cards__saldo-mq',
       `🪙 SALDO MEMORY QUEST: ${formatarQuantidadeMQ(saldoMQ)}`);
     saldoNode.dataset.saldoMq = String(formatarQuantidadeMQ(saldoMQ));
-    menu.appendChild(saldoNode);
+    const linhaSaldo = el('div', 'cards__saldo-linha');
+    linhaSaldo.appendChild(saldoNode);
+    linhaSaldo.appendChild(botao('🛒 Loja de habilidades', 'btn btn--arcade cards__btn-loja', () => {
+      callbacks.onAbrirLoja?.();
+    }));
+    menu.appendChild(linhaSaldo);
 
     // Configurações do Jogo da Memória.
     {
@@ -871,9 +895,34 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
       controleZoom.appendChild(rangeZoom);
       botoesTopo.appendChild(controleZoom);
     }
+    // Habilidade paga da Fase 2: fica no topo da partida, fora do tabuleiro,
+    // para não alterar geometria nem bloquear navegação/saída segura.
+    const visao = el('button', 'cards__visao-total btn btn--arcade');
+    visao.type = 'button';
+    visao.dataset.visaoTotal = 'true';
+    const iconeVisao = document.createElement('img');
+    iconeVisao.className = 'cards__visao-total__icone';
+    iconeVisao.setAttribute('src', ICONE_VISAO_TOTAL);
+    iconeVisao.setAttribute('alt', 'Ícone da habilidade Visão total');
+    iconeVisao.setAttribute('width', '28');
+    iconeVisao.setAttribute('height', '28');
+    iconeVisao.setAttribute('decoding', 'async');
+    visao.appendChild(iconeVisao);
+    visao.appendChild(el('span', 'cards__visao-total__nome', 'Visão total'));
+    contadorVisaoTotal = el('span', 'cards__visao-total__contador', '0');
+    contadorVisaoTotal.dataset.usosVisaoTotal = '0';
+    visao.appendChild(contadorVisaoTotal);
+    estadoVisaoTotal = el('span', 'cards__visao-total__estado', '0 usos');
+    estadoVisaoTotal.setAttribute('role', 'status');
+    visao.appendChild(estadoVisaoTotal);
+    escutar(visao, 'click', () => callbacks.onVisaoTotal?.());
+    botaoVisaoTotal = visao;
+    botoesTopo.appendChild(visao);
+
     botoesTopo.appendChild(botao('⚙ Configurações', 'btn btn--text', () => callbacks.onMenu?.()));
     botoesTopo.appendChild(botao('← Coleção', 'btn btn--text', () => callbacks.onVoltar?.()));
     topo.appendChild(botoesTopo);
+    definirUsosVisaoTotal(config.usosVisaoTotal ?? 0);
     return topo;
   }
 
@@ -1196,7 +1245,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
       escutar(btn, 'click', () => {
         // Defesa dupla: o botão já vem desativado na prévia, mas um clique
         // sintético/programático não pode iniciar tentativa nem seleção.
-        if (emApresentacao || btn.disabled) return;
+        if (emApresentacao || visaoTotalAtivo || btn.disabled) return;
         const revelada = cartaVisivel(ultimoSnapshot, carta.id);
         if (
           configAtiva?.modo === 'expandido' &&
@@ -1280,7 +1329,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     controllerPartida = new AbortController();
     escutar(window, 'keydown', (event) => {
       if (resultEl && !resultEl.classList.contains('hidden')) return;
-      if (emApresentacao) return;
+      if (emApresentacao || visaoTotalAtivo) return;
       const chave = event.key;
 
       if (chave === 'ArrowLeft') { event.preventDefault(); moverCursor(-1, 0, config.colunas); }
@@ -1408,7 +1457,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     previaBarraEl = el('div', 'cards__memoria-barra cards__memoria-barra--previa');
     barra.appendChild(previaBarraEl);
     aviso.appendChild(barra);
-    game.appendChild(aviso);
+    // A contagem ocupa espaço próprio no fluxo, acima do tabuleiro. Assim nenhuma
+    // carta fica encoberta em nenhum tamanho de tela.
+    game.insertBefore(aviso, boardEl);
     previaOverlayEl = aviso;
 
     boardEl.classList.add('cards__board--bloqueado');
@@ -1449,6 +1500,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
 
     reconstruirAreaAmpliacao(config, normalizarAmpliacao(config.visualizacaoCartas));
     instalarTeclado(config);
+    definirUsosVisaoTotal(config.usosVisaoTotal ?? usosVisaoTotal);
     // O snapshot ainda tem todas as cartas viradas: atualizar() remove a classe
     // --revelada e o CSS 3D faz a virada sem recriar o tabuleiro.
     atualizar(snapshot, config, 0);
@@ -1461,22 +1513,114 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     criarEstruturaPartida(config, snapshot);
     reconstruirAreaAmpliacao(config, normalizarAmpliacao(config.visualizacaoCartas));
     instalarTeclado(config);
+    definirUsosVisaoTotal(config.usosVisaoTotal ?? usosVisaoTotal);
     atualizar(snapshot, config, 0);
+  }
+
+  /** Reflete o saldo MQ após uma compra/liquidação sem recriar a tela. */
+  function atualizarSaldoMQ(saldo) {
+    const texto = formatarQuantidadeMQ(saldo);
+    if (saldoNode) {
+      saldoNode.textContent = `🪙 SALDO MEMORY QUEST: ${texto}`;
+      saldoNode.dataset.saldoMq = texto;
+    }
+    if (hud.saldo) hud.saldo.textContent = `SALDO MQ: ${texto}`;
+  }
+
+  /** Sincroniza o botão da habilidade com o inventário real e o ciclo da habilidade. */
+  function definirUsosVisaoTotal(usos, opcoes = {}) {
+    usosVisaoTotal = formatarQuantidadeMQ(usos);
+    const rotulo = `${usosVisaoTotal} ${usosVisaoTotal === 1 ? 'uso' : 'usos'}`;
+    if (contadorVisaoTotal) {
+      contadorVisaoTotal.textContent = String(usosVisaoTotal);
+      contadorVisaoTotal.dataset.usosVisaoTotal = String(usosVisaoTotal);
+    }
+    if (estadoVisaoTotal) {
+      estadoVisaoTotal.textContent = visaoTotalAtivo
+        ? 'ATIVA · 3s'
+        : opcoes.estado === 'consumindo' ? 'Processando…' : rotulo;
+    }
+    if (botaoVisaoTotal) {
+      botaoVisaoTotal.disabled = usosVisaoTotal < 1 || visaoTotalAtivo
+        || opcoes.estado === 'consumindo' || emApresentacao;
+      botaoVisaoTotal.setAttribute(
+        'aria-label', `Usar Visão total. ${rotulo} disponíveis`
+      );
+      botaoVisaoTotal.classList.toggle('cards__visao-total--ativo', visaoTotalAtivo);
+      botaoVisaoTotal.classList.toggle('cards__visao-total--sem-usos', usosVisaoTotal < 1);
+    }
+  }
+
+  /** Verifica se uma carta está visível apenas por causa da habilidade ativa. */
+  function cartaReveladaPorVisao(id) {
+    return visaoTotalAtivo && visaoTotalRevelados.has(id);
+  }
+
+  /**
+   * Revelação 100% visual: o snapshot lógico (`board.js`) permanece intacto.
+   * Nenhuma carta pareada é alterada e nenhum acerto é registrado.
+   */
+  function ativarVisaoTotal(snapshot, duracaoMs = 3000) {
+    if (!boardEl) return;
+    cancelarAmpliacao();
+    visaoTotalAtivo = true;
+    visaoTotalRevelados = new Set(
+      (snapshot?.cartas || []).filter((carta) => !carta.pareada).map((carta) => carta.id)
+    );
+    boardEl.classList.add('cards__board--bloqueado');
+    boardEl.classList.add('cards__board--visao-total');
+    for (const id of visaoTotalRevelados) {
+      const no = cartasEls.get(id);
+      if (!no) continue;
+      no.classList.add('cards__card--revelada');
+      no.classList.remove('cards__card--selecionada');
+      no.setAttribute('aria-pressed', 'true');
+      no.disabled = true;
+    }
+    definirUsosVisaoTotal(usosVisaoTotal);
+    feedback(`VISÃO TOTAL — ${visaoTotalRevelados.size} cartas reveladas por ${Math.ceil(duracaoMs / 1000)}s`,
+      'previa');
+    if (botaoVisaoTotal) botaoVisaoTotal.dataset.visaoTotalAtiva = 'true';
+  }
+
+  /** Restaura exatamente o estado visual anterior ao término/cancelamento. */
+  function restaurarVisaoTotal(snapshot) {
+    visaoTotalAtivo = false;
+    visaoTotalRevelados = new Set();
+    if (botaoVisaoTotal) botaoVisaoTotal.dataset.visaoTotalAtiva = 'false';
+    if (!boardEl) {
+      definirUsosVisaoTotal(usosVisaoTotal);
+      return;
+    }
+    boardEl.classList.remove('cards__board--visao-total');
+    atualizar(snapshot || ultimoSnapshot || { cartas: [], selecionadas: [], aguardandoComparacao: false },
+      configAtiva, ultimoTempoSegundos);
+    definirUsosVisaoTotal(usosVisaoTotal);
+    feedback('Visão total encerrada');
   }
 
   function atualizar(snapshot, config, tempoSegundos = 0) {
     if (!boardEl) return;
+    ultimoTempoSegundos = tempoSegundos;
     for (const carta of snapshot.cartas) {
       const node = cartasEls.get(carta.id);
       if (!node) continue;
-      node.classList.toggle('cards__card--revelada', carta.revelada || carta.pareada);
+      const revelada = carta.revelada || carta.pareada || cartaReveladaPorVisao(carta.id);
+      node.classList.toggle('cards__card--revelada', revelada);
       node.classList.toggle('cards__card--pareada', carta.pareada);
-      node.classList.toggle('cards__card--selecionada', snapshot.selecionadas.includes(carta.id));
-      node.setAttribute('aria-pressed', carta.revelada || carta.pareada ? 'true' : 'false');
-      node.disabled = carta.pareada || emApresentacao;
+      node.classList.toggle(
+        'cards__card--selecionada',
+        snapshot.selecionadas.includes(carta.id) && !visaoTotalAtivo
+      );
+      node.setAttribute('aria-pressed', revelada ? 'true' : 'false');
+      node.disabled = carta.pareada || emApresentacao || visaoTotalAtivo;
     }
 
-    boardEl.classList.toggle('cards__board--bloqueado', snapshot.aguardandoComparacao);
+    boardEl.classList.toggle(
+      'cards__board--bloqueado',
+      snapshot.aguardandoComparacao || visaoTotalAtivo
+    );
+    boardEl.classList.toggle('cards__board--visao-total', visaoTotalAtivo);
 
     if (hud.pares) hud.pares.textContent = `Pares ${snapshot.progresso.pares}/${snapshot.progresso.totalPares}`;
     if (hud.tentativas) {
@@ -1613,6 +1757,10 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     concluirPrevia,
     mostrarPartida,
     atualizar,
+    atualizarSaldoMQ,
+    definirUsosVisaoTotal,
+    ativarVisaoTotal,
+    restaurarVisaoTotal,
     feedback,
     mostrarResultado,
     esconderResultado,

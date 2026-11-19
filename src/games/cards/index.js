@@ -33,9 +33,15 @@ import {
 } from '../../core/game-stats.js';
 import {
   obterSaldoMQ,
-  liquidarSessaoMQ
+  liquidarSessaoMQ,
+  registrarObservadorCarteiraMQ
 } from '../../core/mq-economy.js';
 import { criarRastreadorRecompensas } from './recompensas.js';
+import { criarControladorVisaoTotal } from './visao-total.js';
+import {
+  obterUsosVisaoTotal,
+  consumirUsoVisaoTotal
+} from '../../core/mq-habilidade.js';
 import {
   obterPreferenciasCartas,
   salvarPreferenciasCartas,
@@ -76,6 +82,7 @@ let progressaoAutomatica = true;
 let visualizacaoCartasAtual = VISUALIZACAO_PADRAO;
 let tamanhoAmpliacaoAtual = TAMANHO_AMPLIACAO_PADRAO;
 let removerObservadorPreferencias = null;
+let removerObservadorCarteira = null;
 let modalidadeAtual = 'pontuacao';
 let cheatAtual = { infinitas: false, personalizada: false, quantidade: 20 };
 let audioAtual = { fx: true, bgm: true };
@@ -92,6 +99,9 @@ let partidaFinalizada = false;
 // reinício e navegação — nessas situações não há liquidação nem pagamento.
 let rastreador = null;
 let saldoMQAtual = 0;
+// FASE 2: inventário persistido e ciclo da habilidade por partida.
+let usosVisaoTotalAtual = 0;
+let controladorVisaoTotal = null;
 
 /** Nomes legíveis para os botões de dificuldade. */
 const NOMES_DIFICULDADE = Object.fromEntries(
@@ -133,6 +143,17 @@ async function recarregarSaldoMQ() {
   return saldoMQAtual;
 }
 
+async function recarregarInventarioVisaoTotal() {
+  try {
+    usosVisaoTotalAtual = await obterUsosVisaoTotal();
+  } catch (err) {
+    console.warn('[cards] Não foi possível carregar os usos de Visão total:', err);
+  }
+  controladorVisaoTotal?.sincronizarUsos(usosVisaoTotalAtual);
+  renderer?.definirUsosVisaoTotal(usosVisaoTotalAtual);
+  return usosVisaoTotalAtual;
+}
+
 /** Resumo leve para o HUD; nunca liquida nem grava nada. */
 function economiaNaTela() {
   if (!rastreador) return null;
@@ -157,6 +178,41 @@ function atualizarEconomiaNaTela() {
 }
 
 /**
+ * Ativa a Visão total. Nunca chama `sinalizarCheat`: a habilidade é paga e
+ * não pode alterar elegibilidade de recompensa nem qualquer contador da partida.
+ */
+function ativarVisaoTotal() {
+  if (!sessao || !configAtual || !controladorVisaoTotal
+    || emApresentacao || partidaFinalizada) {
+    renderer?.feedback('Use a Visão total durante a partida', 'erro');
+    return Promise.resolve({ ok: false, motivo: 'partida_inativa' });
+  }
+
+  // Rejeição sem consumo: uma comparação de duas cartas está em andamento.
+  if (sessao.estado().aguardandoComparacao) {
+    renderer?.feedback('Aguarde a comparação atual', 'erro');
+    return Promise.resolve({ ok: false, motivo: 'comparacao_pendente' });
+  }
+
+  // Fecha somente a carta isolada; nenhum par/tentativa/erro é alterado.
+  if (sessao.estado().selecionadas.length === 1) {
+    const fechado = sessao.fecharSelecaoIsolada();
+    if (fechado.tipo === 'fechado') {
+      renderer.atualizar(
+        { ...fechado, economia: economiaNaTela() },
+        configAtual,
+        sessao.tempoDecorrido()
+      );
+    }
+  }
+
+  return controladorVisaoTotal.ativar({
+    partidaAtiva: true,
+    aguardandoComparacao: sessao.estado().aguardandoComparacao
+  });
+}
+
+/**
  * PONTO ÚNICO DE BLOQUEIO POR CHEAT.
  *
  * Todo cheat existente ou futuro deve chamar esta função. O bloqueio é
@@ -171,7 +227,15 @@ function sinalizarCheat(tipo, detalhes = {}, avisar = true) {
   atualizarEconomiaNaTela();
 }
 
+/** Cancela revelação em andamento sem devolver o uso já consumido. */
+function cancelarVisaoTotal(motivo = 'sessao_encerrada') {
+  controladorVisaoTotal?.cancelar(motivo);
+}
+
 function encerrarSessao() {
+  // A habilidade é cancelada ANTES de o board ser destruído para que a
+  // restauração visual ainda encontre as cartas da partida que termina.
+  cancelarVisaoTotal();
   // Incrementar antes de limpar garante que nenhum callback da geração anterior
   // altere a partida nova (reinício, abandonos, navegação ou destroy).
   sequenciaSessao += 1;
@@ -195,9 +259,10 @@ async function abrirMenu(foco = null) {
 
   let estatisticas = null;
   try {
-    [estatisticas, saldoMQAtual] = await Promise.all([
+    [estatisticas, saldoMQAtual, usosVisaoTotalAtual] = await Promise.all([
       obterEstatisticas(),
-      obterSaldoMQ()
+      obterSaldoMQ(),
+      obterUsosVisaoTotal()
     ]);
   } catch (err) {
     console.warn('[cards] Não foi possível carregar estatísticas/saldo:', err);
@@ -241,7 +306,8 @@ function configuracaoAtual(calculo = calcularTentativasIniciais(dificuldadeAtual
     }),
     visualizacaoCartas: visualizacaoCartasAtual,
     tamanhoAmpliacaoCartas: tamanhoAmpliacaoAtual,
-    saldoMQ: saldoMQAtual
+    saldoMQ: saldoMQAtual,
+    usosVisaoTotal: usosVisaoTotalAtual
   };
 }
 
@@ -392,6 +458,8 @@ async function finalizarPartida({ derrota = false, idSessaoEsperado = null } = {
   if (partidaFinalizada) return;
   if (idSessaoEsperado !== null && idSessaoEsperado !== sequenciaSessao) return;
   partidaFinalizada = true;
+  // Vitória/derrota encerram qualquer revelação ativa antes de calcular stats.
+  cancelarVisaoTotal('partida_finalizada');
 
   pararLoop();
   renderer?.cancelarAmpliacao();
@@ -611,12 +679,31 @@ async function init() {
     renderer?.definirTamanhoAmpliacao(novo);
   });
 
+  // Compras, liquidações e consumo de habilidades refletem imediatamente no
+  // saldo e no estoque, sem exigir navegação ou recarregamento.
+  if (removerObservadorCarteira) removerObservadorCarteira();
+  removerObservadorCarteira = registrarObservadorCarteiraMQ(() => {
+    Promise.all([recarregarSaldoMQ(), recarregarInventarioVisaoTotal()]).then(
+      ([saldo, usos]) => {
+        if (!renderer) return;
+        renderer.atualizarSaldoMQ(saldo);
+        renderer.definirUsosVisaoTotal(usos);
+        if (configAtual) {
+          configAtual.saldoMQ = saldo;
+          configAtual.usosVisaoTotal = usos;
+          atualizarEconomiaNaTela();
+        }
+      }
+    );
+  });
+
   await recarregarSelfies();
-  await recarregarSaldoMQ();
+  await Promise.all([recarregarSaldoMQ(), recarregarInventarioVisaoTotal()]);
 
   renderer = criarRenderer(root, {
     onIniciar: () => iniciarPartida(),
     onVoltar: () => navegarPara('home'),
+    onAbrirLoja: () => navegarPara('shop'),
     onTrocarDificuldade: (chave) => {
       const normalizada = normalizarDificuldadeCartas(chave);
       if (!DIFICULDADES_CARTAS_EXPANDIDO[normalizada]) return;
@@ -750,12 +837,38 @@ async function init() {
     },
     onErroSelfie: (mensagem) => erroSelfie(mensagem),
     onSelecionar: (id) => {
-      if (!sessao || emApresentacao) return;
+      if (!sessao || emApresentacao || controladorVisaoTotal?.ocupado) return;
       tratarEvento(sessao.selecionar(id));
     },
+    onVisaoTotal: () => { ativarVisaoTotal(); },
     onMenu: () => abrirMenu(),
     onReiniciar: () => iniciarPartida()
   });
+
+  controladorVisaoTotal = criarControladorVisaoTotal({
+    usos: usosVisaoTotalAtual,
+    consumir: consumirUsoVisaoTotal,
+    onEstado: ({ usos, estado }) => {
+      renderer?.definirUsosVisaoTotal(usos, { estado });
+    },
+    onAtivar: ({ duracaoMs }) => {
+      renderer?.ativarVisaoTotal(sessao?.estado(), duracaoMs);
+    },
+    onRestaurar: () => {
+      renderer?.restaurarVisaoTotal(sessao?.estado());
+    },
+    onErro: ({ motivo }) => {
+      const mensagens = {
+        sem_estoque: 'Sem usos de Visão total — compre na loja',
+        estoque_insuficiente: 'Sem usos de Visão total — compre na loja',
+        comparacao_pendente: 'Aguarde a comparação atual',
+        falha_consumo: 'Não foi possível consumir o uso da habilidade',
+        chave_invalida: 'Não foi possível ativar a habilidade'
+      };
+      renderer?.feedback(mensagens[motivo] || 'Não foi possível ativar a Visão total', 'erro');
+    }
+  });
+  controladorVisaoTotal.sincronizarUsos(usosVisaoTotalAtual);
 
   renderer.definirAudio(audioAtual);
   iniciado = true;
@@ -771,6 +884,11 @@ function destroy() {
   renderer = null;
   if (removerObservadorPreferencias) removerObservadorPreferencias();
   removerObservadorPreferencias = null;
+  if (removerObservadorCarteira) removerObservadorCarteira();
+  removerObservadorCarteira = null;
+  // `encerrarSessao()` já cancelou timers/reações; aqui apenas descarta a
+  // instância para que uma nova inicialização comece com geração limpa.
+  controladorVisaoTotal = null;
   root = null;
   iniciado = false;
 }

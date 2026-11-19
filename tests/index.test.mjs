@@ -11,6 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 // ============================================================================
 // MOCK DE INDEXEDDB EM MEMÓRIA
@@ -498,12 +499,32 @@ import {
   calcularLiquidacaoMQ,
   obterSaldoMQ,
   obterEstadoMQ,
+  estadoSeguro,
   listarHistoricoMQ,
   liquidarSessaoMQ,
+  registrarObservadorCarteiraMQ,
+  notificarCarteiraMQ,
   MQ_TIPO_PAR,
   MQ_TIPO_BONUS
 } from '../src/core/mq-economy.js';
+import {
+  PRECO_VISAO_TOTAL,
+  HABILIDADE_VISAO_TOTAL,
+  MQ_TIPO_COMPRA_VISAO,
+  ITEM_VISAO_TOTAL,
+  criarChaveOperacaoCompra,
+  obterInventarioMQ,
+  comprarVisaoTotal
+} from '../src/core/mq-shop.js';
+import {
+  MQ_TIPO_USO_VISAO,
+  DURACAO_VISAO_TOTAL_MS,
+  criarChaveOperacaoVisaoTotal,
+  obterUsosVisaoTotal,
+  consumirUsoVisaoTotal
+} from '../src/core/mq-habilidade.js';
 import { criarRastreadorRecompensas } from '../src/games/cards/recompensas.js';
+import { renderizarLoja, destruirLoja } from '../src/ui/shop.js';
 import {
   getSaldo, getEstado, addCoins, debitCoins, registrarTransacao, getHistorico, contarTransacoes, validarRecompensa, WALLET_DEFAULT_ID
 } from '../src/core/wallet.js';
@@ -538,6 +559,7 @@ import {
 } from '../src/games/cards/expanded.js';
 import { criarPartida, criarSessao } from '../src/games/cards/board.js';
 import { criarRenderer } from '../src/games/cards/renderer.js';
+import { criarControladorVisaoTotal } from '../src/games/cards/visao-total.js';
 import {
   criarControladorPrevia,
   criarPreviaParaDificuldade,
@@ -1210,6 +1232,13 @@ class MockNode {
   }
   get className() { return this._classes; }
   appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
+  insertBefore(node, referencia) {
+    node.parentNode = this;
+    const indice = this.children.indexOf(referencia);
+    if (indice < 0) this.children.push(node);
+    else this.children.splice(indice, 0, node);
+    return node;
+  }
   replaceChildren(...nos) {
     this.children.forEach((filho) => { filho.parentNode = null; });
     this.children = [];
@@ -3257,6 +3286,13 @@ function comoHtmlCollection(node) {
     }
   });
   node.appendChild = (filho) => { filho.parentNode = node; filhos.push(filho); return filho; };
+  node.insertBefore = (filho, referencia) => {
+    filho.parentNode = node;
+    const indice = filhos.indexOf(referencia);
+    if (indice < 0) filhos.push(filho);
+    else filhos.splice(indice, 0, filho);
+    return filho;
+  };
   node.replaceChildren = (...nos) => {
     filhos.forEach((filho) => { filho.parentNode = null; });
     filhos.length = 0;
@@ -3371,18 +3407,22 @@ async function grupoAuditoria() {
       assert.strictEqual(metadata[0].versaoBanco, 4);
     });
 
-    await test('service worker usa cache v19 com ícones, economia e estatísticas', async () => {
+    await test('service worker usa cache v21 com ícones, economia e estatísticas', async () => {
       const sw = readFileSync(new URL('../service-worker.js', import.meta.url), 'utf8');
-      assert.match(sw, /const CACHE_NAME = 'memory-quest-v19'/);
+      assert.match(sw, /const CACHE_NAME = 'memory-quest-v21'/);
       assert.ok(!sw.includes('smb3-original.js'), 'adaptador removido do precache');
       const lista = sw.match(/const ESSENTIAL_ASSETS = \[([\s\S]*?)\];/)[1];
       const assets = lista.match(/'\.\/[^']*'/g);
-      assert.strictEqual(assets.length, 47, 'precache contém os 47 assets ativos');
+      assert.strictEqual(assets.length, 53, 'precache contém os 53 assets ativos');
       assert.ok(!sw.includes("'./src/games/cards/classic.js'"),
         'módulo legado removido do precache');
       for (const modulo of [
         './src/core/selfies.js',
         './src/core/mq-economy.js',
+        './src/core/mq-shop.js',
+        './src/core/mq-habilidade.js',
+        './src/ui/shop.js',
+        './src/ui/components.js',
         './src/core/migrations.js',
         './src/core/settings.js',
         './src/core/profile.js',
@@ -3393,6 +3433,7 @@ async function grupoAuditoria() {
         './src/games/cards/tentativas.js',
         './src/games/cards/recompensas.js',
         './src/games/cards/previa.js',
+        './src/games/cards/visao-total.js',
         './src/games/cards/renderer.js',
         './src/games/cards/styles.css'
       ]) {
@@ -4117,7 +4158,7 @@ async function grupoIconesPWA() {
       for (const nome of esperados) {
         assert.ok(sw.includes(`'./assets/icons/${nome}'`), `${nome} ausente no precache`);
       }
-      assert.match(sw, /const CACHE_NAME = 'memory-quest-v19'/);
+      assert.match(sw, /const CACHE_NAME = 'memory-quest-v21'/);
       assert.ok(
         html.includes('<link rel="apple-touch-icon" href="assets/icons/icon-192.png" />')
       );
@@ -4244,7 +4285,15 @@ async function grupoEtapa2() {
         });
 
         const aviso = encontrarNo(cenario.raiz, (no) => no.dataset?.previa === 'true');
-        assert.ok(aviso, 'prévia precisa de sobreposição central');
+        assert.ok(aviso, 'prévia precisa de faixa própria acima do tabuleiro');
+        const game = aviso.parentNode;
+        assert.ok(game.children[0] !== aviso,
+          'a faixa da prévia pertence ao corpo do jogo, não ao topo');
+        const posicaoAviso = [...game.children].indexOf(aviso);
+        const posicaoBoard = [...game.children].indexOf(encontrarNo(cenario.raiz,
+          (no) => no.classList.contains('cards__board')));
+        assert.ok(posicaoAviso >= 0 && posicaoBoard > posicaoAviso,
+          'a contagem deve vir antes do tabuleiro para não cobrir cartas');
         assert.ok(percorrerNo(aviso).some((no) => no.textContent === 'MEMORIZE AS CARTAS!'));
         const contagem = encontrarNo(aviso,
           (no) => no.getAttribute('aria-label') === 'Segundos restantes');
@@ -4372,7 +4421,7 @@ async function grupoEtapa2() {
       }
     });
 
-    await test('CSS da prévia é pixel art, central e responsivo sem mover o tabuleiro', async () => {
+    await test('CSS da prévia é pixel art, fica acima do tabuleiro e é responsivo', async () => {
       const css = readFileSync(new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
       for (const trecho of [
         '.cards__game {',
@@ -4380,8 +4429,9 @@ async function grupoEtapa2() {
         '.cards__board--bloqueado',
         'pointer-events: none;',
         '.cards__previa {',
-        'position: absolute;',
-        'left: 50%;',
+        'align-self: stretch;',
+        'width: min(360px, 100%);',
+        'margin: 0 auto;',
         'pointer-events: none;',
         '.cards__previa-mensagem',
         '.cards__previa-contagem',
@@ -4393,6 +4443,15 @@ async function grupoEtapa2() {
       ]) {
         assert.ok(css.includes(trecho), `ausente no CSS: ${trecho}`);
       }
+      const blocoPrevia = css.match(/\.cards__previa \{([\s\S]*?)\}/)[1];
+      assert.ok(!/position:\s*absolute/.test(blocoPrevia),
+        'a prévia não pode ser absoluta sobre o tabuleiro');
+      assert.ok(!/\btop:|\bleft:/.test(blocoPrevia),
+        'a prévia não pode usar deslocamento absoluto');
+      const fonteRenderer = readFileSync(
+        new URL('../src/games/cards/renderer.js', import.meta.url), 'utf8');
+      assert.ok(fonteRenderer.includes('game.insertBefore(aviso, boardEl)'),
+        'a contagem deve ser inserida antes do tabuleiro no fluxo');
     });
   });
 }
@@ -5696,6 +5755,867 @@ async function grupoEtapa4() {
 }
 
 // ============================================================================
+// FASE 1 — ECONOMIA MQ, INVENTÁRIO E LOJA DE HABILIDADES
+// ============================================================================
+
+async function grupoFase1Loja() {
+  await grupo('FASE 1 — inventário, loja e carteira MQ unificada', async () => {
+    const carteiraCom = async (saldo, extras = {}) => {
+      await put('mqWallet', {
+        id: MQ_WALLET_ID,
+        saldo,
+        totalConquistado: saldo,
+        totalLiquido: saldo,
+        atualizadoEm: Date.now(),
+        ...extras
+      });
+    };
+
+    await test('jogador novo começa com zero moedas MQ e estoque zero', async () => {
+      await resetDB();
+      await openDatabase();
+      const estado = await obterEstadoMQ();
+      assert.strictEqual(estado.saldo, 0);
+      assert.strictEqual(estado.habilidades.visaoTotal, 0);
+      assert.strictEqual(estado.totalGasto, 0);
+      assert.strictEqual(await obterInventarioMQ(), 0);
+      assert.strictEqual(PRECO_VISAO_TOTAL, 100);
+      assert.strictEqual(ITEM_VISAO_TOTAL.preco, 100);
+    });
+
+    await test('compra debita exatamente 100 moedas e acrescenta exatamente um uso', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(250);
+      const chave = criarChaveOperacaoCompra();
+      const resultado = await comprarVisaoTotal(chave);
+      assert.strictEqual(resultado.ok, true, JSON.stringify(resultado));
+      assert.strictEqual(resultado.duplicado, false);
+      assert.strictEqual(resultado.saldo, 150);
+      assert.strictEqual(resultado.estoque, 1);
+
+      const estado = await obterEstadoMQ();
+      assert.strictEqual(estado.saldo, 150);
+      assert.strictEqual(estado.totalGasto, 100);
+      assert.strictEqual(estado.totalConquistado, 250, 'recompensa conquistada preservada');
+      assert.strictEqual(estado.habilidades.visaoTotal, 1);
+      assert.strictEqual(await obterInventarioMQ(), 1);
+
+      const transacoes = await getAll('mqTransactions');
+      assert.strictEqual(transacoes.length, 1);
+      const compra = transacoes[0];
+      assert.strictEqual(compra.walletId, MQ_WALLET_ID);
+      assert.strictEqual(compra.sessionId, chave);
+      assert.strictEqual(compra.operacaoId, chave);
+      assert.strictEqual(compra.tipo, MQ_TIPO_COMPRA_VISAO);
+      assert.strictEqual(compra.quantidade, 100);
+      assert.strictEqual(compra.saldoAnterior, 250);
+      assert.strictEqual(compra.saldoPosterior, 150);
+      assert.strictEqual(compra.estoqueAnterior, 0);
+      assert.strictEqual(compra.estoquePosterior, 1);
+      assert.strictEqual(compra.itemId, HABILIDADE_VISAO_TOTAL);
+    });
+
+    await test('saldo insuficiente não debita, não inventaria e não registra transação', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(99);
+      const resultado = await comprarVisaoTotal(criarChaveOperacaoCompra());
+      assert.strictEqual(resultado.ok, false);
+      assert.strictEqual(resultado.erro, 'saldo_insuficiente');
+      assert.strictEqual(resultado.saldo, 99);
+      assert.strictEqual(resultado.estoque, 0);
+      assert.strictEqual(await obterSaldoMQ(), 99);
+      assert.strictEqual(await obterInventarioMQ(), 0);
+      assert.strictEqual((await getAll('mqTransactions')).length, 0);
+      const carteira = await get('mqWallet', MQ_WALLET_ID);
+      assert.strictEqual(carteira.saldo, 99);
+      assert.strictEqual(carteira.totalGasto, undefined);
+    });
+
+    await test('compras consecutivas legítimas com chaves distintas são permitidas', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(350);
+      for (let indice = 0; indice < 3; indice += 1) {
+        const resultado = await comprarVisaoTotal(criarChaveOperacaoCompra());
+        assert.strictEqual(resultado.ok, true, JSON.stringify(resultado));
+        assert.strictEqual(resultado.duplicado, false);
+      }
+      assert.strictEqual(await obterSaldoMQ(), 50);
+      assert.strictEqual(await obterInventarioMQ(), 3);
+      assert.strictEqual((await obterEstadoMQ()).totalGasto, 300);
+      const transacoes = await getAll('mqTransactions');
+      assert.strictEqual(transacoes.length, 3);
+      assert.strictEqual(new Set(transacoes.map((item) => item.sessionId)).size, 3);
+    });
+
+    await test('repetir a mesma chave não debita nem gera segunda transação', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(500);
+      const chave = criarChaveOperacaoCompra();
+      const primeiro = await comprarVisaoTotal(chave);
+      const segundo = await comprarVisaoTotal(chave);
+      assert.strictEqual(primeiro.ok, true);
+      assert.strictEqual(primeiro.duplicado, false);
+      assert.strictEqual(segundo.ok, true);
+      assert.strictEqual(segundo.duplicado, true);
+      assert.strictEqual(segundo.saldo, primeiro.saldo);
+      assert.strictEqual(segundo.estoque, primeiro.estoque);
+      assert.strictEqual(await obterSaldoMQ(), 400);
+      assert.strictEqual(await obterInventarioMQ(), 1);
+      assert.strictEqual((await getAll('mqTransactions')).length, 1);
+    });
+
+    await test('chave vazia é rejeitada antes de qualquer escrita', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(200);
+      const resultado = await comprarVisaoTotal('   ');
+      assert.strictEqual(resultado.ok, false);
+      assert.strictEqual(resultado.erro, 'chave_invalida');
+      assert.strictEqual(await obterSaldoMQ(), 200);
+      assert.strictEqual((await getAll('mqTransactions')).length, 0);
+    });
+
+    await test('inventário persiste após recarregar o banco', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(400);
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+      assert.strictEqual(await obterInventarioMQ(), 2);
+
+      closeDatabase();
+      await openDatabase();
+      assert.strictEqual(await obterInventarioMQ(), 2);
+      assert.strictEqual(await obterSaldoMQ(), 200);
+      assert.strictEqual((await getAll('mqTransactions')).length, 2);
+    });
+
+    await test('registro antigo sem inventário é interpretado como estoque zero', async () => {
+      await resetDB();
+      await openDatabase();
+      await put('mqWallet', {
+        id: MQ_WALLET_ID, saldo: 300,
+        totalConquistado: 300, totalLiquido: 300, atualizadoEm: 1
+      });
+      assert.strictEqual(await obterInventarioMQ(), 0);
+      const resultado = await comprarVisaoTotal(criarChaveOperacaoCompra());
+      assert.strictEqual(resultado.ok, true);
+      assert.strictEqual(resultado.estoque, 1);
+      assert.strictEqual((await obterEstadoMQ()).habilidades.visaoTotal, 1);
+    });
+
+    await test('backup com inventário restaura saldo e usos; backup antigo preserva os atuais', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(700);
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+      const backup = await exportarProgresso();
+      const carteiraSalva = backup.stores.mqWallet[0];
+      assert.strictEqual(carteiraSalva.habilidades.visaoTotal, 1);
+      assert.strictEqual(carteiraSalva.totalGasto, 100);
+
+      await clear('mqWallet');
+      await clear('mqTransactions');
+      const restaurado = await importarProgresso(backup);
+      assert.strictEqual(restaurado.ok, true, JSON.stringify(restaurado.erros));
+      assert.strictEqual(await obterInventarioMQ(), 1);
+      assert.strictEqual(await obterSaldoMQ(), 600);
+
+      const antigo = await exportarProgresso();
+      antigo.versaoBanco = 1;
+      for (const nome of ['selfies', 'mqWallet', 'mqTransactions', 'mqSessions']) {
+        delete antigo.stores[nome];
+      }
+      const preservado = await importarProgresso(antigo);
+      assert.strictEqual(preservado.ok, true, JSON.stringify(preservado.erros));
+      assert.strictEqual(await obterInventarioMQ(), 1);
+      assert.strictEqual(await obterSaldoMQ(), 600);
+    });
+
+    await test('observador notifica compras e liquidações e pode ser removido', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(200);
+      const eventos = [];
+      const remover = registrarObservadorCarteiraMQ(() => { eventos.push('mq'); });
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+      assert.strictEqual(eventos.length, 1, 'compra atualiza todas as exibições');
+
+      await liquidarSessaoMQ({
+        sessionId: 'obs_fase1', dificuldade: 'facil', vitoria: true,
+        paresEncontrados: 1, somaMultiplicadores: 1, tentativas: 1
+      });
+      assert.strictEqual(eventos.length, 2, 'liquidação também atualiza');
+      remover();
+      notificarCarteiraMQ();
+      assert.strictEqual(eventos.length, 2);
+    });
+
+    await test('carteira Plinko permanece independente da carteira MQ', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(500);
+      await addCoins(75, { descricao: 'Plinko legado' });
+      const saldoPlinko = await getSaldo();
+      const transacoesPlinko = (await getAll('transactions')).length;
+      const saldoMQ = await obterSaldoMQ();
+
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+
+      assert.strictEqual(await getSaldo(), saldoPlinko, 'compra MQ não toca no Plinko');
+      assert.strictEqual((await getAll('transactions')).length, transacoesPlinko);
+      assert.strictEqual(await obterSaldoMQ(), saldoMQ - 100);
+      const estadoPlinko = await getEstado();
+      assert.ok(Number.isFinite(estadoPlinko.saldo));
+    });
+
+    await test('recompensas das cinco dificuldades não são alteradas pela loja', async () => {
+      assert.deepEqual({ ...MQ_MOEDAS_POR_PAR }, {
+        facil: 1, normal: 2, dificil: 3, muitodificil: 4, extremo: 5
+      });
+      assert.deepEqual({ ...MQ_BONUS_MAX }, {
+        facil: 18, normal: 60, dificil: 144, muitodificil: 288, extremo: 500
+      });
+      await resetDB();
+      await openDatabase();
+      await carteiraCom(500);
+      const liquidacao = calcularLiquidacaoMQ({
+        sessionId: 'recompensas_fase1', dificuldade: 'normal', vitoria: true,
+        paresEncontrados: 2, somaMultiplicadores: 3, tentativas: 2
+      });
+      assert.strictEqual(liquidacao.moedasPares, 6);
+      await liquidarSessaoMQ(liquidacao);
+      const antes = await obterEstadoMQ();
+      await comprarVisaoTotal(criarChaveOperacaoCompra());
+      const depois = await obterEstadoMQ();
+      assert.strictEqual(depois.totalConquistado, antes.totalConquistado);
+      assert.strictEqual(depois.saldo, antes.saldo - 100);
+    });
+
+    await test('todas as exibições de saldo leem a carteira MQ', async () => {
+      const main = readFileSync(new URL('../src/app/main.js', import.meta.url), 'utf8');
+      const perfil = readFileSync(new URL('../src/ui/profile.js', import.meta.url), 'utf8');
+      const cards = readFileSync(new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+      assert.match(main, /const estado = await obterEstadoMQ\(\)/);
+      assert.ok(!main.includes('const estado = await getEstado()'));
+      assert.match(perfil, /obterEstadoMQ\(\)/);
+      assert.ok(!perfil.includes('getEstado'));
+      assert.match(cards, /obterSaldoMQ/);
+      for (const id of ['wallet-amount', 'stat-saldo', 'shop-board']) {
+        assert.match(html, new RegExp(`id="${id}"`));
+      }
+      assert.match(main, /registrarObservadorCarteiraMQ/);
+      assert.match(cards, /atualizarSaldoMQ/);
+      const rendererFonte = readFileSync(
+        new URL('../src/games/cards/renderer.js', import.meta.url), 'utf8'
+      );
+      assert.match(cards, /onAbrirLoja: \(\) => navegarPara\('shop'\)/);
+      assert.match(rendererFonte, /🛒 Loja de habilidades/);
+      assert.match(rendererFonte, /callbacks\.onAbrirLoja\?\.\(\)/);
+    });
+
+    await test('ícone original da habilidade é reutilizado sem alteração', async () => {
+      const icone = readFileSync(new URL('../assets/icons/visao.png', import.meta.url));
+      assert.strictEqual(icone.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      assert.strictEqual(icone.readUInt32BE(16), 6400);
+      assert.strictEqual(icone.readUInt32BE(20), 6400);
+      assert.strictEqual(icone[25], 6, 'PNG RGBA com canal alfa');
+      assert.strictEqual(
+        createHash('sha256').update(icone).digest('hex'),
+        '23203e16fe63bf2e3e3958b2582342e818195dc1a5710e06f82ef2eb504cb7d6'
+      );
+      assert.strictEqual(ITEM_VISAO_TOTAL.icone, 'assets/icons/visao.png');
+      const catalogo = readFileSync(new URL('../src/core/mq-shop.js', import.meta.url), 'utf8');
+      assert.ok(catalogo.includes("icone: 'assets/icons/visao.png'"));
+      const loja = readFileSync(new URL('../src/ui/shop.js', import.meta.url), 'utf8');
+      assert.match(loja, /createElement\('img'\)/);
+      assert.match(loja, /setAttribute\('src', ITEM_VISAO_TOTAL\.icone\)/);
+      const sw = readFileSync(new URL('../service-worker.js', import.meta.url), 'utf8');
+      assert.ok(sw.includes("'./assets/icons/visao.png'"), 'ícone ausente no precache offline');
+    });
+
+    await test('loja não usa imagens externas nem ícones substitutos', () => {
+      const loja = readFileSync(new URL('../src/ui/shop.js', import.meta.url), 'utf8');
+      for (const padrao of [
+        /https?:\/\//, /data:image/i, /<svg/i, /createElementNS/, /new Image\(/
+      ]) {
+        assert.doesNotMatch(loja, padrao, `recurso proibido: ${padrao}`);
+      }
+      const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+      assert.doesNotMatch(html, /area-shop[\s\S]{0,400}<img/);
+    });
+
+    await test('loja mantém proporção do ícone e cabe em 360 px', () => {
+      const css = readFileSync(new URL('../styles/main.css', import.meta.url), 'utf8');
+      assert.match(css, /\.shop-ability__icone\s*\{[^}]*object-fit:\s*contain/);
+      assert.match(css, /\.shop-ability__icone\s*\{[^}]*max-width:\s*100%/);
+      assert.match(css, /\.shop__grade\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/);
+      assert.match(
+        css,
+        /@media \(max-width: 360px\)\s*\{[\s\S]*?\.shop__grade\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/
+      );
+      assert.match(css, /--accent:|var\(--accent\)/);
+      assert.match(css, /var\(--accent-2\)/);
+      assert.match(css, /var\(--accent-3\)/);
+    });
+
+    await test('interface da loja mostra ícone, saldo, estoque e compra atualiza tudo', async () => {
+      const anteriorDocumento = globalThis.document;
+      globalThis.document = {
+        createElement: (tag) => new MockNode(tag),
+        getElementById: (id) => (id === 'toast-template' ? null : new MockNode('div')),
+        querySelector: () => new MockNode('div'),
+        body: new MockNode('body'),
+        activeElement: null
+      };
+      try {
+        await resetDB();
+        await openDatabase();
+        await carteiraCom(200);
+        const root = new MockNode('div');
+        await renderizarLoja(root);
+
+        const imagem = encontrarNo(root, (no) => no.tagName === 'IMG');
+        assert.ok(imagem, 'ícone original precisa estar no DOM');
+        assert.strictEqual(imagem.getAttribute('src'), 'assets/icons/visao.png');
+
+        const texto = percorrerNo(root).map((no) => no.textContent).join(' ');
+        assert.match(texto, /Visão total/);
+        assert.match(texto, /100 🪙 por uso/);
+        assert.match(texto, /200 🪙/);
+        assert.match(texto, /0 usos/);
+
+        const botaoComprar = encontrarNo(
+          root, (no) => no.tagName === 'BUTTON' && no.textContent === 'Comprar'
+        );
+        assert.ok(botaoComprar, 'botão Comprar ausente');
+        botaoComprar.click();
+        await esperarTexto(root, /1 uso/);
+
+        assert.strictEqual(await obterInventarioMQ(), 1);
+        assert.strictEqual(await obterSaldoMQ(), 100);
+        const saldoNo = encontrarNo(root, (no) => no.classList.contains('shop-ability__saldo'));
+        const estoqueNo = encontrarNo(root, (no) => no.classList.contains('shop-ability__estoque'));
+        assert.strictEqual(saldoNo.dataset.saldoMq, '100');
+        assert.strictEqual(estoqueNo.dataset.estoqueVisaoTotal, '1');
+        destruirLoja();
+      } finally {
+        globalThis.document = anteriorDocumento;
+        destruirLoja();
+      }
+    });
+  });
+}
+
+// ============================================================================
+// FASE 2 — VISÃO TOTAL DURANTE A PARTIDA
+// ============================================================================
+
+async function grupoFase2VisaoTotal() {
+  await grupo('FASE 2 — habilidade Visão total na partida', async () => {
+    const carteiraComUsos = async (usos, saldo = 0, extras = {}) => put('mqWallet', {
+      id: MQ_WALLET_ID,
+      saldo,
+      totalConquistado: saldo,
+      totalLiquido: saldo,
+      habilidades: { visaoTotal: usos },
+      atualizadoEm: Date.now(),
+      ...extras
+    });
+
+    const controladorFake = (opcoes = {}) => {
+      const ag = criarAgendadorFake();
+      const eventos = { ativar: [], restaurar: [], erro: [], estado: [] };
+      let estoque = opcoes.usos ?? 1;
+      const consumos = [];
+      const controlador = criarControladorVisaoTotal({
+        usos: estoque,
+        agora: () => opcoes.agora ?? 1000,
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        consumir: typeof opcoes.consumir === 'function'
+          ? opcoes.consumir
+          : async (chave) => {
+            consumos.push(chave);
+            estoque = Math.max(0, estoque - 1);
+            return { ok: true, duplicado: false, saldo: 500, estoque };
+          },
+        onEstado: (estado) => eventos.estado.push(estado),
+        onAtivar: (dados) => eventos.ativar.push(dados),
+        onRestaurar: (dados) => eventos.restaurar.push(dados),
+        onErro: (dados) => eventos.erro.push(dados)
+      });
+      return { ag, eventos, controlador, consumos };
+    };
+
+    await test('1. ativação com estoque disponível consome exatamente um uso e não toca no saldo', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(3, 250, { totalGasto: 100 });
+      const chave = criarChaveOperacaoVisaoTotal();
+      const resultado = await consumirUsoVisaoTotal(chave);
+
+      assert.strictEqual(resultado.ok, true, JSON.stringify(resultado));
+      assert.strictEqual(resultado.duplicado, false);
+      assert.strictEqual(resultado.estoque, 2);
+      assert.strictEqual(resultado.saldo, 250, 'a habilidade não debita moedas');
+      assert.strictEqual(await obterUsosVisaoTotal(), 2);
+      const carteira = await obterEstadoMQ();
+      assert.strictEqual(carteira.saldo, 250);
+      assert.strictEqual(carteira.totalConquistado, 250);
+      assert.strictEqual(carteira.totalGasto, 100, 'o gasto da loja permanece intacto');
+
+      const transacoes = await getAll('mqTransactions');
+      assert.strictEqual(transacoes.length, 1);
+      assert.strictEqual(transacoes[0].sessionId, chave);
+      assert.strictEqual(transacoes[0].tipo, MQ_TIPO_USO_VISAO);
+      assert.strictEqual(transacoes[0].quantidade, 1);
+      assert.strictEqual(transacoes[0].estoqueAnterior, 3);
+      assert.strictEqual(transacoes[0].estoquePosterior, 2);
+    });
+
+    await test('2. ativação sem estoque é rejeitada sem escrita', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(0, 80);
+      const resultado = await consumirUsoVisaoTotal(criarChaveOperacaoVisaoTotal());
+      assert.strictEqual(resultado.ok, false);
+      assert.strictEqual(resultado.erro, 'estoque_insuficiente');
+      assert.strictEqual(resultado.estoque, 0);
+      assert.strictEqual(await obterUsosVisaoTotal(), 0);
+      assert.strictEqual((await getAll('mqTransactions')).length, 0);
+    });
+
+    await test('3. repetição técnica da mesma operação não consome dois usos', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(2, 300);
+      const chave = criarChaveOperacaoVisaoTotal();
+      const primeiro = await consumirUsoVisaoTotal(chave);
+      const repeticao = await consumirUsoVisaoTotal(chave);
+      assert.strictEqual(primeiro.ok, true);
+      assert.strictEqual(primeiro.duplicado, false);
+      assert.strictEqual(repeticao.ok, true);
+      assert.strictEqual(repeticao.duplicado, true);
+      assert.strictEqual(repeticao.estoque, primeiro.estoque);
+      assert.strictEqual(await obterUsosVisaoTotal(), 1);
+      assert.strictEqual((await getAll('mqTransactions')).length, 1);
+    });
+
+    await test('4. ativações diferentes na mesma partida consomem um uso cada', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(3, 300);
+      for (let indice = 0; indice < 3; indice += 1) {
+        const resultado = await consumirUsoVisaoTotal(criarChaveOperacaoVisaoTotal());
+        assert.strictEqual(resultado.ok, true, JSON.stringify(resultado));
+        assert.strictEqual(resultado.duplicado, false);
+      }
+      assert.strictEqual(await obterUsosVisaoTotal(), 0);
+      const transacoes = await getAll('mqTransactions');
+      assert.strictEqual(transacoes.length, 3);
+      assert.strictEqual(new Set(transacoes.map((item) => item.sessionId)).size, 3);
+    });
+
+    await test('5. concorrência com a mesma chave gera apenas uma cobrança', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(2, 300);
+      const chave = criarChaveOperacaoVisaoTotal();
+      const resultados = await Promise.all([
+        consumirUsoVisaoTotal(chave),
+        consumirUsoVisaoTotal(chave)
+      ]);
+      assert.ok(resultados.every((item) => item.ok));
+      assert.strictEqual(resultados.filter((item) => !item.duplicado).length, 1);
+      assert.strictEqual(await obterUsosVisaoTotal(), 1);
+      assert.strictEqual((await getAll('mqTransactions')).length, 1);
+    });
+
+    await test('6. a chave da habilidade nunca reutiliza a chave da compra', async () => {
+      const chaveCompra = criarChaveOperacaoCompra();
+      const chaveUso = criarChaveOperacaoVisaoTotal();
+      assert.match(chaveCompra, /^compra_visao_total_/);
+      assert.match(chaveUso, /^uso_visao_total_/);
+      assert.notStrictEqual(chaveUso, chaveCompra);
+      assert.ok(!chaveUso.startsWith(MQ_TIPO_COMPRA_VISAO));
+    });
+
+    await test('7. carta isolada selecionada é fechada sem alterar contadores', async () => {
+      const config = criarConfigExpandida('normal', criarRng(11));
+      const partida = criarPartida(config);
+      const id = config.cartas[0].id;
+      assert.strictEqual(partida.selecionar(id).tipo, 'revelado');
+      const antes = partida.estado();
+      const fechado = partida.fecharSelecaoIsolada();
+
+      assert.strictEqual(fechado.tipo, 'fechado');
+      assert.strictEqual(fechado.id, id);
+      assert.deepEqual(fechado.selecionadas, []);
+      assert.strictEqual(fechado.cartas.find((carta) => carta.id === id).revelada, false);
+      assert.strictEqual(fechado.tentativas, antes.tentativas);
+      assert.strictEqual(fechado.erros, antes.erros);
+      assert.strictEqual(fechado.progresso.pares, antes.progresso.pares);
+      assert.strictEqual(fechado.aguardandoComparacao, false);
+
+      partida.selecionar(config.cartas[0].id);
+      partida.selecionar(config.cartas[1].id);
+      assert.strictEqual(partida.fecharSelecaoIsolada().tipo, 'nada',
+        'não mexe em comparação de duas cartas');
+    });
+
+    await test('8. comparação pendente rejeita a ativação sem consumir', async () => {
+      const { eventos, controlador, consumos } = controladorFake({ usos: 1 });
+      const resultado = await controlador.ativar({ aguardandoComparacao: true });
+      assert.strictEqual(resultado.ok, false);
+      assert.strictEqual(resultado.motivo, 'comparacao_pendente');
+      assert.strictEqual(consumos.length, 0);
+      assert.strictEqual(eventos.ativar.length, 0);
+      assert.strictEqual(eventos.erro[0].motivo, 'comparacao_pendente');
+      assert.strictEqual(controlador.usos, 1);
+    });
+
+    await test('9. revelação dura exatamente 3 segundos e restaura uma vez', async () => {
+      const { ag, eventos, controlador } = controladorFake({ usos: 1 });
+      const resultado = await controlador.ativar({});
+      assert.strictEqual(resultado.ok, true);
+      assert.strictEqual(controlador.ativa, true);
+      assert.strictEqual(eventos.ativar.length, 1);
+      assert.strictEqual(eventos.ativar[0].duracaoMs, DURACAO_VISAO_TOTAL_MS);
+      assert.strictEqual(DURACAO_VISAO_TOTAL_MS, 3000);
+      assert.strictEqual(ag.agendados.length, 1);
+      assert.strictEqual(ag.agendados[0].ms, 3000);
+
+      ag.executarTodos();
+      assert.strictEqual(controlador.ativa, false);
+      assert.strictEqual(eventos.restaurar.length, 1);
+      assert.strictEqual(controlador.usos, 0);
+    });
+
+    await test('10. cliques rápidos e ativação sobreposta não duplicam consumo', async () => {
+      let resolverConsumo;
+      const { eventos, controlador, consumos } = controladorFake({
+        usos: 3,
+        consumir: (chave) => {
+          consumos.push(chave);
+          return new Promise((resolve) => { resolverConsumo = resolve; });
+        }
+      });
+      const primeiro = controlador.ativar({});
+      const segundo = await controlador.ativar({});
+      const terceiro = await controlador.ativar({});
+      assert.strictEqual(segundo.ok, false);
+      assert.strictEqual(terceiro.ok, false);
+      assert.strictEqual(consumos.length, 1);
+
+      resolverConsumo({ ok: true, duplicado: false, estoque: 2, saldo: 300 });
+      const resultado = await primeiro;
+      assert.strictEqual(resultado.ok, true);
+      assert.strictEqual(eventos.ativar.length, 1, 'não permite sobreposição');
+    });
+
+    await test('11. falha no consumo não revela, não agenda timer e não reduz estoque local', async () => {
+      const { ag, eventos, controlador, consumos } = controladorFake({
+        usos: 1,
+        consumir: async (chave) => {
+          consumos.push(chave);
+          return { ok: false, erro: 'estoque_insuficiente', saldo: 0, estoque: 0 };
+        }
+      });
+      const resultado = await controlador.ativar({});
+      assert.strictEqual(resultado.ok, false);
+      assert.strictEqual(resultado.motivo, 'estoque_insuficiente');
+      assert.strictEqual(consumos.length, 1);
+      assert.strictEqual(eventos.ativar.length, 0);
+      assert.strictEqual(eventos.restaurar.length, 0);
+      assert.strictEqual(ag.agendados.length, 0);
+      assert.strictEqual(controlador.usos, 0);
+      assert.strictEqual(eventos.erro[0].motivo, 'estoque_insuficiente');
+    });
+
+    await test('12. timeout de sessão antiga não revela cartas na partida nova', async () => {
+      const { ag, eventos, controlador } = controladorFake({ usos: 2 });
+      await controlador.ativar({});
+      const geracaoAntiga = controlador.geracao;
+      controlador.cancelar('reinicio');
+      assert.ok(controlador.geracao > geracaoAntiga);
+
+      await controlador.ativar({});
+      ag.executarTodos();
+      assert.strictEqual(eventos.restaurar.length, 2,
+        'uma restauração pelo cancelamento e uma pelo timer atual — nenhuma antiga');
+      assert.strictEqual(ag.agendados.filter((item) => !item.cancelado && item.executado).length, 1);
+      assert.strictEqual(controlador.ativa, false);
+    });
+
+    await test('13. cronômetro continua correndo normalmente durante a revelação', async () => {
+      const config = criarConfigExpandida('facil', criarRng(12));
+      let agora = 1000;
+      const sessao = criarSessao(config, { agora: () => agora });
+      sessao.iniciarCronometro();
+      agora = 4000;
+      assert.strictEqual(sessao.tempoDecorrido(), 3);
+
+      const { controlador, ag } = controladorFake({ usos: 1 });
+      await controlador.ativar({});
+      agora = 7000;
+      assert.strictEqual(sessao.tempoDecorrido(), 6, 'a habilidade não pausa nem reinicia o tempo');
+      assert.strictEqual(sessao.cronometroAtivo, true);
+      ag.executarTodos();
+      sessao.destruir();
+    });
+
+    await test('14. tentativas, erros, pares e elegibilidade de recompensa não mudam', async () => {
+      const config = criarConfigExpandida('normal', criarRng(13));
+      const sessao = criarSessao(config, { agora: () => 1000 });
+      sessao.iniciarCronometro();
+      const par = agruparPorSimbolo(config.cartas).values().next().value;
+      sessao.selecionar(par[0]);
+      sessao.selecionar(par[1]);
+      sessao.destruir(); // resolve timers pendentes sem emitir novos eventos
+
+      const partida = criarPartida(config);
+      partida.selecionar(par[0].id);
+      partida.selecionar(par[1].id);
+      partida.resolver();
+      const antes = partida.estado();
+      const rastreador = criarRastreadorRecompensas({
+        sessionId: 'fase2_sem_cheat', dificuldade: 'normal', modalidade: 'pontuacao',
+        tentativasIniciais: config.tentativasIniciais, tempoAlvo: config.tempoAlvo
+      });
+      rastreador.registrarPar();
+      assert.strictEqual(rastreador.rewardsEligible, true);
+
+      const { controlador, ag } = controladorFake({ usos: 1 });
+      await controlador.ativar({});
+      ag.executarTodos();
+      const depois = partida.estado();
+      assert.deepEqual(depois, antes);
+      assert.strictEqual(rastreador.rewardsEligible, true);
+    });
+
+    await test('15. cancelamento cobre vitória/derrota, abandono, reinício e destroy', async () => {
+      const { eventos, controlador } = controladorFake({ usos: 1 });
+      await controlador.ativar({});
+      const resultado = controlador.cancelar('partida_finalizada');
+      assert.strictEqual(resultado.ok, true);
+      assert.strictEqual(eventos.restaurar.length, 1);
+      assert.strictEqual(eventos.restaurar[0].motivo, 'partida_finalizada');
+      assert.strictEqual(controlador.ativa, false);
+
+      const indice = readFileSync(new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      assert.match(indice, /cancelarVisaoTotal\(\);[\s\S]{0,200}sequenciaSessao \+= 1/);
+      assert.match(indice, /partidaFinalizada = true;[\s\S]{0,180}cancelarVisaoTotal\('partida_finalizada'\)/);
+      assert.match(indice, /function destroy\(\) \{[\s\S]{0,200}encerrarSessao\(\)/);
+      assert.match(indice, /controladorVisaoTotal = null/);
+    });
+
+    await test('16. funciona nas cinco dificuldades sem tocar nas cartas', async () => {
+      const chaves = Object.keys(DIFICULDADES_CARTAS_EXPANDIDO);
+      assert.deepEqual(chaves, ['facil', 'normal', 'dificil', 'muitodificil', 'extremo']);
+      for (const chave of chaves) {
+        const config = criarConfigExpandida(chave, criarRng(31));
+        const partida = criarPartida(config);
+        const antes = partida.estado();
+        const { eventos, controlador, ag } = controladorFake({ usos: 1 });
+        const resultado = await controlador.ativar({});
+        assert.strictEqual(resultado.ok, true, `ativação em ${chave}`);
+        assert.strictEqual(eventos.ativar[0].duracaoMs, 3000);
+        ag.executarTodos();
+        assert.deepEqual(partida.estado(), antes, `estado lógico em ${chave}`);
+      }
+    });
+
+    await test('17. Extremo revela 100 cartas, preserva pares e restaura sem overflow', () => {
+      const config = criarConfigExpandida('extremo', criarRng(99));
+      assert.strictEqual(config.cartas.length, 100);
+      assert.strictEqual(DIFICULDADES_CARTAS_EXPANDIDO.extremo.cartas, 100);
+      const cenario = criarCenarioRendererNovo();
+      try {
+        const partida = criarPartida(config);
+        const par = agruparPorSimbolo(config.cartas).values().next().value;
+        partida.selecionar(par[0]);
+        partida.selecionar(par[1]);
+        partida.resolver();
+        const snapshot = partida.estado();
+
+        cenario.renderer.mostrarPartida(config, snapshot);
+        cenario.renderer.definirUsosVisaoTotal(2);
+        cenario.renderer.ativarVisaoTotal(snapshot, 3000);
+
+        const cartas = encontrarNo(cenario.raiz, (no) => no.classList.contains('cards__board'))
+          .children.filter((no) => no.classList.contains('cards__card'));
+        assert.strictEqual(cartas.length, 100);
+        const naoPareadas = cartas.filter((no) => !no.classList.contains('cards__card--pareada'));
+        assert.strictEqual(naoPareadas.length, 98);
+        assert.ok(naoPareadas.every((no) => no.classList.contains('cards__card--revelada')));
+        assert.ok(naoPareadas.every((no) => no.disabled));
+        assert.ok(cartas.filter((no) => no.classList.contains('cards__card--pareada'))
+          .every((no) => no.classList.contains('cards__card--revelada')));
+
+        const board = encontrarNo(cenario.raiz, (no) => no.classList.contains('cards__board'));
+        assert.ok(board.classList.contains('cards__board--visao-total'));
+        assert.ok(board.classList.contains('cards__board--bloqueado'));
+        assert.strictEqual(board.style.getPropertyValue('--cards-cols'), '10');
+
+        cenario.renderer.restaurarVisaoTotal(snapshot);
+        assert.ok(cartas.filter((no) => !no.classList.contains('cards__card--pareada'))
+          .every((no) => !no.classList.contains('cards__card--revelada')));
+        assert.ok(!board.classList.contains('cards__board--bloqueado'));
+      } finally {
+        cenario.restaurar();
+      }
+
+      const css = readFileSync(new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
+      assert.match(css, /repeat\(var\(--cards-cols, 6\), minmax\(0, 1fr\)\)/);
+    });
+
+    await test('18. controle na partida usa o ícone original e mostra usos/estado', () => {
+      const config = criarConfigExpandida('facil', criarRng(41));
+      let selecoes = 0;
+      const cenario = criarCenarioRendererNovo({ onSelecionar: () => { selecoes += 1; } });
+      try {
+        cenario.renderer.mostrarPartida(config, criarPartida(config).estado());
+        const botao = encontrarNo(cenario.raiz, (no) => no.dataset.visaoTotal === 'true');
+        assert.ok(botao, 'botão da habilidade ausente');
+        const imagem = encontrarNo(botao, (no) => no.tagName === 'IMG');
+        assert.strictEqual(imagem.getAttribute('src'), 'assets/icons/visao.png');
+        assert.strictEqual(imagem.getAttribute('alt'), 'Ícone da habilidade Visão total');
+        assert.match(percorrerNo(botao).map((no) => no.textContent).join(' '), /Visão total/);
+
+        cenario.renderer.definirUsosVisaoTotal(1);
+        const contador = encontrarNo(botao, (no) => no.classList.contains('cards__visao-total__contador'));
+        assert.strictEqual(contador.dataset.usosVisaoTotal, '1');
+        assert.strictEqual(botao.disabled, false);
+
+        cenario.renderer.definirUsosVisaoTotal(0);
+        assert.strictEqual(botao.disabled, true);
+        assert.ok(botao.classList.contains('cards__visao-total--sem-usos'));
+        assert.strictEqual(selecoes, 0);
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('19. durante a revelação cliques e teclado não selecionam cartas', () => {
+      const config = criarConfigExpandida('facil', criarRng(42));
+      let selecoes = 0;
+      const cenario = criarCenarioRendererNovo({ onSelecionar: () => { selecoes += 1; } });
+      try {
+        const snapshot = criarPartida(config).estado();
+        cenario.renderer.mostrarPartida(config, snapshot);
+        cenario.renderer.definirUsosVisaoTotal(1);
+        cenario.renderer.ativarVisaoTotal(snapshot, 3000);
+
+        const carta = encontrarNo(
+          cenario.raiz, (no) => no.classList.contains('cards__card')
+        );
+        carta.click();
+        globalThis.window.dispatch('keydown', { key: 'ArrowRight' });
+        globalThis.window.dispatch('keydown', { key: 'Enter' });
+        assert.strictEqual(selecoes, 0, 'tabuleiro e teclado ficam bloqueados');
+
+        cenario.renderer.restaurarVisaoTotal(snapshot);
+        carta.click();
+        assert.strictEqual(selecoes, 1, 'interação normal volta após 3 segundos');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('20. inventário reativo: consumo e compra refletem no controlador', async () => {
+      await resetDB();
+      await openDatabase();
+      await carteiraComUsos(2, 300);
+      const { controlador, ag } = controladorFake({
+        usos: await obterUsosVisaoTotal(),
+        consumir: consumirUsoVisaoTotal
+      });
+      let sincronizacaoPendente = Promise.resolve();
+      const remover = registrarObservadorCarteiraMQ(() => {
+        sincronizacaoPendente = obterUsosVisaoTotal().then((usos) => {
+          controlador.sincronizarUsos(usos);
+        });
+      });
+      try {
+        const resultado = await controlador.ativar({});
+        assert.strictEqual(resultado.ok, true);
+        await sincronizacaoPendente;
+        assert.strictEqual(controlador.usos, 1, 'estoque atualizado imediatamente após consumo');
+
+        const compra = await comprarVisaoTotal(criarChaveOperacaoCompra());
+        assert.strictEqual(compra.ok, true, JSON.stringify(compra));
+        await sincronizacaoPendente;
+        assert.strictEqual(controlador.usos, 2, 'compra na loja também atualiza o controle');
+        ag.executarTodos();
+      } finally {
+        remover();
+      }
+    });
+
+    await test('21. ícone permanece íntegro e não há substitutos visuais', () => {
+      const icone = readFileSync(new URL('../assets/icons/visao.png', import.meta.url));
+      assert.strictEqual(icone.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      assert.strictEqual(icone.readUInt32BE(16), 6400);
+      assert.strictEqual(icone.readUInt32BE(20), 6400);
+      assert.strictEqual(icone[25], 6);
+      assert.strictEqual(
+        createHash('sha256').update(icone).digest('hex'),
+        '23203e16fe63bf2e3e3958b2582342e818195dc1a5710e06f82ef2eb504cb7d6'
+      );
+
+      const renderer = readFileSync(new URL('../src/games/cards/renderer.js', import.meta.url), 'utf8');
+      assert.ok(renderer.includes("ICONE_VISAO_TOTAL = 'assets/icons/visao.png'"));
+      assert.match(renderer, /setAttribute\('src', ICONE_VISAO_TOTAL\)/);
+      for (const padrao of [/https?:\/\//, /data:image/i, /<svg/i, /createElementNS/, /new Image\(/]) {
+        assert.doesNotMatch(renderer, padrao, `recurso proibido no renderer: ${padrao}`);
+      }
+      const css = readFileSync(new URL('../src/games/cards/styles.css', import.meta.url), 'utf8');
+      assert.match(css, /\.cards__visao-total__icone\s*\{[^}]*object-fit:\s*contain/);
+      assert.match(css, /\.cards__visao-total__icone\s*\{[^}]*max-width:\s*100%/);
+      assert.match(css, /@media \(max-width: 360px\)[\s\S]*?cards__visao-total/);
+    });
+
+    await test('22. Plinko e recompensas permanecem intactos', async () => {
+      await resetDB();
+      await openDatabase();
+      await addCoins(75, { descricao: 'Plinko legado' });
+      await carteiraComUsos(2, 300);
+      const saldoPlinko = await getSaldo();
+      const transacoesPlinko = (await getAll('transactions')).length;
+
+      await consumirUsoVisaoTotal(criarChaveOperacaoVisaoTotal());
+
+      assert.strictEqual(await getSaldo(), saldoPlinko);
+      assert.strictEqual((await getAll('transactions')).length, transacoesPlinko);
+      const conquistadas = await obterMoedasConquistadasMQ();
+      assert.strictEqual(conquistadas.total, 0, 'uso da habilidade não é moeda conquistada');
+      assert.strictEqual(conquistadas.transacoes, 0, 'uso da habilidade não entra na estatística');
+      assert.deepEqual({ ...MQ_MOEDAS_POR_PAR }, {
+        facil: 1, normal: 2, dificil: 3, muitodificil: 4, extremo: 5
+      });
+      assert.deepEqual({ ...MQ_BONUS_MAX }, {
+        facil: 18, normal: 60, dificil: 144, muitodificil: 288, extremo: 500
+      });
+
+      const indice = readFileSync(new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      assert.ok(!indice.includes('sinalizarCheat(') === false, 'cheat existente preservado');
+      assert.match(indice, /onVisaoTotal: \(\) => \{ ativarVisaoTotal\(\); \}/);
+      assert.ok(!indice.includes('sinalizarCheat(\'visao'), 'Visão total não é cheat');
+      const habilidades = readFileSync(new URL('../src/core/mq-habilidade.js', import.meta.url), 'utf8');
+      assert.ok(!habilidades.includes('wallet.js'));
+      assert.ok(!habilidades.includes("'wallet'"));
+      assert.ok(!habilidades.includes('recompensas'));
+    });
+  });
+}
+
+// ============================================================================
 // EXECUÇÃO
 // ============================================================================
 
@@ -5729,6 +6649,8 @@ async function main() {
   await grupoBotoes();
   await grupoAuditoria();
   await grupoEtapa4();
+  await grupoFase1Loja();
+  await grupoFase2VisaoTotal();
 
   delete globalThis.window;
   closeDatabase();

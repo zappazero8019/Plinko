@@ -116,6 +116,22 @@ export function criarPartida(config, opcoes = {}) {
   }
 
   /**
+   * Fecha somente a carta isolada já selecionada (sem segunda carta), sem
+   * tocar em tentativas, erros, pares, pontuação ou cronômetro. Usado pela
+   * Visão total para não deixar uma seleção órfã antes da revelação.
+   */
+  function fecharSelecaoIsolada() {
+    if (concluida || aguardandoComparacao || selecionadas.length !== 1) {
+      return { tipo: 'nada', ...snapshot() };
+    }
+    const id = selecionadas[0];
+    const carta = cartas.find((item) => item.id === id);
+    if (carta) carta.revelada = false;
+    selecionadas = [];
+    return { tipo: 'fechado', id, ...snapshot() };
+  }
+
+  /**
    * Resolve a comparação pendente. Deve ser chamado pelo agendador da sessão
    * após o atraso de animação.
    */
@@ -207,6 +223,7 @@ export function criarPartida(config, opcoes = {}) {
   return {
     selecionar,
     resolver,
+    fecharSelecaoIsolada,
     reiniciar,
     estado: snapshot,
     get configuracao() { return config; }
@@ -302,6 +319,12 @@ export function criarSessao(config, opcoes = {}) {
     return resultado;
   }
 
+  /** Fecha uma seleção isolada sem criar timers nem emitir eventos de partida. */
+  function fecharSelecaoIsolada() {
+    if (destruida) return { tipo: 'destruida' };
+    return partida.fecharSelecaoIsolada();
+  }
+
   function reiniciar(novaConfig = config) {
     limparTemporizadores();
     destruida = false;
@@ -357,6 +380,7 @@ export function criarSessao(config, opcoes = {}) {
 
   return {
     selecionar,
+    fecharSelecaoIsolada,
     reiniciar,
     destruir,
     iniciarCronometro,

@@ -243,6 +243,62 @@
   accent-color: var(--accent, #22d3ee);
 }
 
+/* FASE 2 — Visão total: habilidade paga, sem alterar a geometria do tabuleiro. */
+.cards__visao-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 34px;
+  padding: 0.18rem 0.45rem;
+  color: var(--text, #e8f7ff);
+  border-color: var(--accent-3, #a78bfa);
+  background: linear-gradient(180deg, #191534, #0b0a1c);
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.28), 2px 2px 0 #000;
+  font-family: var(--font-pixel, monospace);
+  font-size: 0.58rem;
+  white-space: nowrap;
+}
+
+/* object-fit: contain preserva a proporção do PNG original de 6400×6400. */
+.cards__visao-total__icone {
+  display: block;
+  width: 24px;
+  height: 24px;
+  max-width: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.cards__visao-total__contador {
+  color: var(--accent-2, #f472b6);
+  font-variant-numeric: tabular-nums;
+}
+
+.cards__visao-total__estado {
+  color: var(--text-muted, #9a9ab8);
+  font-size: 0.5rem;
+}
+
+.cards__visao-total--ativo {
+  color: var(--warning, #fbbf24);
+  border-color: var(--warning, #fbbf24);
+  box-shadow: 0 0 16px rgba(251, 191, 36, 0.42), 2px 2px 0 #000;
+}
+
+.cards__visao-total--sem-usos {
+  opacity: 0.5;
+}
+
+/* Realce apenas visual: não muda tamanho, colunas nem posição das cartas. */
+.cards__board--visao-total {
+  border-color: var(--accent-3, #a78bfa);
+  box-shadow:
+    inset 0 0 0 2px rgba(167, 139, 250, 0.35),
+    inset 0 0 30px rgba(244, 114, 182, 0.16),
+    0 0 26px rgba(167, 139, 250, 0.28),
+    var(--shadow, 0 4px 0 rgba(0, 0, 0, 0.6));
+}
+
 /* HUD como painel de informações do arcade: tabuleiro permanece o centro. */
 .cards__hud {
   display: grid;
@@ -458,23 +514,20 @@
   animation: cards-memoria var(--memoria-ms, 3500ms) linear forwards;
 }
 
-/* Prévia obrigatória: sobreposição central, sem alterar o fluxo do tabuleiro. */
+/* Prévia obrigatória: faixa própria acima do tabuleiro, sem sobrepor cartas. */
 .cards__previa {
-  position: absolute;
-  top: 52%;
-  left: 50%;
-  z-index: 6;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.35rem;
-  width: min(320px, 86%);
-  padding: 0.7rem 0.9rem;
-  transform: translate(-50%, -50%);
+  gap: 0.25rem;
+  width: min(360px, 100%);
+  margin: 0 auto;
+  padding: 0.5rem 0.8rem;
   pointer-events: none;
-  background: rgba(5, 9, 20, 0.9);
+  background: rgba(5, 9, 20, 0.94);
   border: 2px solid var(--warning, #fbbf24);
-  box-shadow: 0 0 0 3px #050914, 0 0 22px rgba(251, 191, 36, 0.35);
+  box-shadow: 0 0 0 2px #050914, 0 0 18px rgba(251, 191, 36, 0.3);
   text-align: center;
 }
 
@@ -488,7 +541,7 @@
 
 .cards__previa-contagem {
   font-family: var(--font-pixel, monospace);
-  font-size: clamp(2.1rem, 11vw, 3.4rem);
+  font-size: clamp(1.8rem, 8vw, 2.6rem);
   line-height: 1;
   color: #e8f7ff;
   text-shadow: 3px 3px 0 #050914, 0 0 18px var(--accent-glow, rgba(34, 211, 238, 0.5));
@@ -1154,7 +1207,7 @@
   .cards__hud { grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); gap: 0.25rem; padding: 0.3rem; }
   .cards__hud-item { min-height: 32px; font-size: 0.55rem; }
   .cards__board { max-width: 100%; }
-  .cards__previa { width: min(280px, 92%); padding: 0.5rem 0.6rem; }
+  .cards__previa { width: 100%; padding: 0.4rem 0.5rem; }
   .cards__previa-mensagem { font-size: 0.7rem; }
   .cards__avancado { max-width: 100%; }
   .cards__result-acoes { gap: 0.4rem; }
@@ -1180,8 +1233,8 @@
 @media (max-height: 480px) {
   .cards__game { gap: 0.35rem; }
   .cards__meta { display: none; }
-  .cards__previa { top: 54%; gap: 0.2rem; padding: 0.35rem 0.5rem; }
-  .cards__previa-contagem { font-size: 1.8rem; }
+  .cards__previa { gap: 0.15rem; padding: 0.3rem 0.4rem; }
+  .cards__previa-contagem { font-size: 1.5rem; }
   .cards__memoria--previa { height: 8px; }
   .cards__ampliacao--fixa .cards__ampliacao-titulo { display: none; }
   .cards__ampliacao--fixa .cards__ampliacao-conteudo { min-height: 56px; }
@@ -1225,6 +1278,20 @@
   font-variant-numeric: tabular-nums;
   text-shadow: 0 0 8px rgba(251, 191, 36, 0.45);
   overflow-wrap: anywhere;
+}
+
+.cards__saldo-linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.cards__btn-loja {
+  min-height: 34px;
+  font-size: 0.62rem;
+  white-space: nowrap;
 }
 
 .cards__hud-item--saldo {
@@ -1295,4 +1362,16 @@
   .cards__result-economia { max-width: 100%; }
   .cards__economia-item,
   .cards__economia-bloqueio { font-size: 0.55rem; padding: 0.25rem 0.4rem; }
+  .cards__visao-total { min-height: 30px; padding: 0.12rem 0.3rem; }
+  .cards__visao-total__icone { width: 20px; height: 20px; }
+  .cards__visao-total__estado { display: none; }
+}
+
+/* 360 px: o controle da habilidade nunca empurra o tabuleiro de 100 cartas. */
+@media (max-width: 360px) {
+  .cards__topo-botoes { gap: 0.2rem; }
+  .cards__visao-total { gap: 0.2rem; font-size: 0.52rem; }
+  .cards__visao-total__nome { display: none; }
+  .cards__visao-total__icone { width: 18px; height: 18px; }
+  .cards__board--visao-total { box-shadow: inset 0 0 18px rgba(167, 139, 250, 0.3); }
 }
