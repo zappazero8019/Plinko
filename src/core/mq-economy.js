@@ -49,6 +49,10 @@ export const MQ_MULTIPLICADOR_MAXIMO = 16;
 export const MQ_TIPO_PAR = 'pares';
 export const MQ_TIPO_BONUS = 'bonus_tentativas';
 export const MQ_TIPO_BLOQUEIO = 'recompensa_bloqueada';
+export const MQ_TIPO_CHEAT_MOEDAS = 'cheat_adicionar_moedas';
+
+/** Teto seguro para saldo e adições: evita perda de precisão no IndexedDB. */
+export const MQ_LIMITE_SALDO = Number.MAX_SAFE_INTEGER;
 
 function numeroSeguro(valor, fallback = 0) {
   const numero = Number(valor);
@@ -57,6 +61,22 @@ function numeroSeguro(valor, fallback = 0) {
 
 function inteiroSeguro(valor, fallback = 0, minimo = 0) {
   return Math.max(minimo, Math.floor(numeroSeguro(valor, fallback)));
+}
+
+/**
+ * Aceita apenas inteiros positivos seguros. Strings decimais, exponenciais,
+ * sinais, espaços internos, zero, negativos e valores não numéricos são
+ * rejeitados — `0` significa "entrada inválida" para o chamador.
+ */
+export function normalizarQuantidadeCheatMoedas(valor) {
+  if (typeof valor === 'number') {
+    return Number.isSafeInteger(valor) && valor > 0 ? valor : 0;
+  }
+  if (typeof valor !== 'string') return 0;
+  const texto = valor.trim();
+  if (!/^[1-9][0-9]*$/.test(texto)) return 0;
+  const numero = Number(texto);
+  return Number.isSafeInteger(numero) && numero > 0 ? numero : 0;
 }
 
 /** Registros antigos sem inventário são lidos como estoque zero. */
@@ -389,6 +409,76 @@ export function liquidarSessaoMQ(dados = {}) {
             reject
           );
         }, reject);
+      }, reject);
+    })
+  ).then((resultado) => {
+    if (resultado?.ok) notificarCarteiraMQ();
+    return resultado;
+  });
+}
+
+function criarChaveOperacaoCheatMoedas() {
+  const cryptoApi = globalThis.crypto;
+  const aleatorio = typeof cryptoApi?.randomUUID === 'function'
+    ? cryptoApi.randomUUID()
+    : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  return `${MQ_TIPO_CHEAT_MOEDAS}_${aleatorio}`;
+}
+
+/**
+ * Credit moedas pela área de CHEAT na carteira canônica do Memory Quest.
+ *
+ * A operação é atômica, usa tipo próprio no histórico e NÃO incrementa
+ * `totalConquistado`/`totalLiquido`: moedas de cheat nunca são relatadas como
+ * conquistadas jogando. A carteira legada do Plinko não é importada nem tocada.
+ */
+export function adicionarMoedasCheatMQ(valor) {
+  const quantidade = normalizarQuantidadeCheatMoedas(valor);
+  if (!quantidade) {
+    return Promise.resolve({ ok: false, erro: 'quantidade_invalida', saldo: 0 });
+  }
+
+  return transaction(
+    ['mqWallet', 'mqTransactions'],
+    'readwrite',
+    (tx) => new Promise((resolve, reject) => {
+      const carteiraStore = tx.objectStore('mqWallet');
+      const historicoStore = tx.objectStore('mqTransactions');
+
+      requestPromise(carteiraStore.get(MQ_WALLET_ID)).then((registro) => {
+        const anterior = estadoSeguro(registro);
+        if (quantidade > MQ_LIMITE_SALDO - anterior.saldo) {
+          resolve({ ok: false, erro: 'saldo_excedido', saldo: anterior.saldo });
+          return;
+        }
+
+        const agora = Date.now();
+        const chave = criarChaveOperacaoCheatMoedas();
+        const proximo = {
+          ...anterior,
+          saldo: anterior.saldo + quantidade,
+          atualizadoEm: agora
+        };
+        const registroTransacao = {
+          walletId: MQ_WALLET_ID,
+          sessionId: chave,
+          idempotencyKey: chave,
+          tipo: MQ_TIPO_CHEAT_MOEDAS,
+          quantidade,
+          saldoAnterior: anterior.saldo,
+          saldoPosterior: proximo.saldo,
+          descricao: `CHEAT · Adicionar moedas (+${quantidade})`,
+          origem: 'cheat',
+          createdAt: agora
+        };
+
+        Promise.all([
+          requestPromise(carteiraStore.put(proximo)),
+          requestPromise(historicoStore.add(registroTransacao))
+        ]).then(
+          () => resolve({ ok: true, saldo: proximo.saldo, quantidade, transacaoId: chave }),
+          reject
+        );
       }, reject);
     })
   ).then((resultado) => {

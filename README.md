@@ -53,9 +53,9 @@ navegação principal.
 |-------------|-------:|------:|--------------------:|-------:|-----------:|
 | Fácil       | 18     | 9     | 14                 | 3 s    | 60 s      |
 | Normal      | 30     | 15    | 22                 | 4 s    | 110 s     |
-| Difícil     | 48     | 24    | 32                 | 5 s    | 180 s     |
-| Muito difícil | 72   | 36    | 45                 | 6 s    | 280 s     |
-| Extremo     | 100    | 50    | 60                 | 8 s    | 420 s     |
+| Difícil     | 48     | 24    | 32                 | 10 s   | 180 s     |
+| Muito difícil | 72   | 36    | 45                 | 15 s   | 280 s     |
+| Extremo     | 100    | 50    | 60                 | 20 s   | 420 s     |
 
 A prévia das cartas é obrigatória e **não entra no cronômetro oficial**: o tempo
 e as tentativas só começam a valer depois que a apresentação termina.
@@ -72,6 +72,34 @@ Configurações; nesse caso a dificuldade escolhida fica fixa.
 - As moedas pertencem a uma carteira isolada do Memory Quest, exibida dentro do
   jogo, distinta da carteira legada do Plinko mostrada no cabeçalho.
 - Bônus de tentativas e desafios/conquistas são avaliados ao final da partida.
+
+### Loja e Visão total
+
+A loja do Memory Quest usa a mesma carteira isolada do jogo. Cada uso da
+**Visão total** custa **100 moedas MQ** e é guardado no inventário; a carteira
+legada do Plinko não é debitada. A compra é idempotente por chave de operação,
+assim um clique repetido ou uma requisição atrasada não cobra duas vezes.
+
+Durante a partida, o botão da habilidade consome **exatamente um uso**. A duração
+do efeito é definida pela dificuldade **no instante da ativação**:
+
+| Dificuldade | Prévia | Visão total |
+|-------------|-------:|------------:|
+| Fácil       | 3 s    | 5 s         |
+| Normal      | 4 s    | 10 s        |
+| Difícil     | 10 s   | 15 s        |
+| Muito difícil | 15 s | 20 s        |
+| Extremo     | 20 s   | 25 s        |
+
+A Visão total **inverte visualmente** o tabuleiro: cartas ainda não encontradas
+são reveladas e cartas de pares já encontrados voltam a mostrar o verso. É um
+efeito apenas visual — o estado lógico, pares, contadores, pontuação, recompensas,
+cronômetro e seleção isolada permanecem intactos. Enquanto o efeito durar, o
+tabuleiro fica bloqueado e a habilidade não pode ser reativada. O efeito é
+cancelado com segurança em vitória, derrota, abandono, reinício, saída ou
+`destroy`, sem devolver o uso já consumido.
+
+Visão total é uma habilidade paga: **não** é CHEAT e **não** bloqueia recompensas.
 
 ### Conquistas
 
@@ -195,6 +223,18 @@ depois. Nesse caso:
 - a progressão e os desafios não são concedidos;
 - a liquidação grava uma transação de bloqueio com quantidade zero.
 
+Há também o CHEAT econômico **Adicionar moedas**, disponível em Opções avançadas
+e no topo da partida. Ele aceita somente inteiros positivos seguros; zero,
+negativos, decimais, textos inválidos e valores que estouram `Number.MAX_SAFE_INTEGER`
+são rejeitados sem escrita. O crédito é atômico na carteira MQ, gera uma transação
+identificável do tipo `cheat_adicionar_moedas` e atualiza imediatamente cabeçalho,
+perfil, loja, HUD e saldo exibido no próprio controle.
+
+As moedas desse CHEAT **não entram em "moedas conquistadas"**, não alteram
+preço/estoque da Visão total e não criam outra carteira. Se usado durante uma
+rodada, a sessão fica comprometida para sempre — como qualquer outro CHEAT — e
+as moedas já creditadas permanecem na carteira ao final da partida.
+
 ---
 
 ## Economia
@@ -269,7 +309,8 @@ stores). O banco solicita persistência quando o navegador permite.
 | `src/app/router.js` | Navegação por hash: `home`, `cards`, `profile`, `settings`, `stats`, `plinko`, `shop` |
 | `src/core/database.js` / `migrations.js` | IndexedDB, transações, integridade e migrações v1 → v4 |
 | `src/core/wallet.js` / `transactions.js` | Carteira e histórico **legados do Plinko** |
-| `src/core/mq-economy.js` | Economia isolada do Memory Quest e liquidação idempotente |
+| `src/core/mq-economy.js` | Economia isolada do Memory Quest, crédito de CHEAT e liquidação idempotente |
+| `src/core/mq-shop.js` / `src/core/mq-habilidade.js` | Loja, inventário, duração por dificuldade e consumo idempotente da Visão total |
 | `src/core/game-stats.js` / `stats-insights.js` | Registro de partidas e leituras derivadas para os gráficos |
 | `src/core/settings.js` | Preferências persistidas e observadores de mudança |
 | `src/core/profile.js` / `selfies.js` | Perfil local e imagens das cartas personalizadas |
@@ -281,6 +322,7 @@ stores). O banco solicita persistência quando o navegador permite.
 | `src/games/cards/tentativas.js` | Tentativas, prioridade do CHEAT e bônus de selfie |
 | `src/games/cards/recompensas.js` | Rastreador de elegibilidade e recompensas da rodada |
 | `src/games/cards/previa.js` | Controle da apresentação obrigatória das cartas |
+| `src/games/cards/visao-total.js` | Ciclo da Visão total, duração dinâmica e cancelamento seguro |
 | `src/games/cards/renderer.js` / `styles.css` | Menu, HUD, tabuleiro, galeria e ampliação |
 | `src/games/cards/cards-data.js` | Símbolos, embaralhamento e layouts |
 | `src/ui/panels.js` / `charts.js` / `profile.js` / `components.js` | Painéis de Configurações, Estatísticas, Perfil e componentes comuns |

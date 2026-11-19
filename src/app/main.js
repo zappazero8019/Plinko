@@ -235,7 +235,15 @@ async function init() {
 
     // 4. Toda alteração na carteira MQ (liquidação ou compra) atualiza o
     //    cabeçalho, a home e o perfil sem recarregar nem trocar de tela.
-    registrarObservadorCarteiraMQ(() => { atualizarCarteiraUI(); });
+    registrarObservadorCarteiraMQ(() => {
+      atualizarCarteiraUI();
+      // O perfil não assina a carteira diretamente; re-renderiza quando a
+      // carteira muda e a área do perfil está visível (hash routing da SPA).
+      if ((location.hash || '').replace(/^#\/?/, '') === 'profile') {
+        renderizarPerfil(document.getElementById('profile-board'))
+          .catch((err) => console.warn('[APP] Falha ao atualizar perfil:', err));
+      }
+    });
 
     // 5. Inicializa router
     initRouter((area, anterior, foco) => {

@@ -243,6 +243,81 @@
   accent-color: var(--accent, #22d3ee);
 }
 
+/* CHEAT "Adicionar moedas": mesma carteira MQ no menu e durante a partida. */
+.cards__cheat-moedas {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+  font-family: var(--font-pixel, monospace);
+  font-size: 0.62rem;
+}
+
+.cards__cheat-moedas__rotulo {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #d8b4fe;
+}
+
+.cards__cheat-moedas__saldo {
+  flex-basis: 100%;
+  color: var(--text-muted, #9a9ab8);
+  font-size: 0.55rem;
+}
+
+.cards__cheat-moedas__botao {
+  min-height: 28px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+
+.cards__cheat-moedas[data-erro='true'] input,
+.cards__cheat-moedas[data-erro='true'] .cards__cheat-moedas__botao {
+  border-color: var(--danger, #f87171);
+}
+
+.cards__cheat-moedas--bloqueado {
+  opacity: 0.45;
+}
+
+.cards__cheat-moedas-topo {
+  max-width: 100%;
+}
+
+.cards__cheat-moedas-topo > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.25rem 0.4rem;
+  color: #d8b4fe;
+  border: 1px solid #a78bfa;
+  border-radius: var(--radius, 2px);
+  font-family: var(--font-pixel, monospace);
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+
+.cards__cheat-moedas-topo > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cards__cheat-moedas-topo[open] > summary {
+  background: rgba(167, 139, 250, 0.16);
+}
+
+.cards__cheat-moedas--compacto {
+  gap: 0.2rem;
+  padding: 0.25rem 0;
+}
+
+.cards__cheat-moedas--compacto input[type='number'] {
+  width: 92px;
+  min-height: 26px;
+  font-size: 0.58rem;
+}
+
 /* FASE 2 — Visão total: habilidade paga, sem alterar a geometria do tabuleiro. */
 .cards__visao-total {
   display: inline-flex;
@@ -484,6 +559,21 @@
   border-color: #4ade80;
   box-shadow: inset 0 0 0 2px #4ade80, 0 0 14px rgba(74, 222, 128, 0.45);
   opacity: 0.95;
+}
+
+/*
+ * Inversão visual da Visão total: pares já encontrados continuam com a classe
+ * lógica `--pareada`, mas voltam a mostrar o verso durante o efeito. Este bloco
+ * vem depois das regras de face para sobrescrever a virada e o brilho verde.
+ * A classe temporária é removida ao restaurar; board.js nunca é alterado.
+ */
+.cards__card--oculta-visao .cards__card-inner {
+  transform: rotateY(0deg);
+}
+
+.cards__card--oculta-visao .cards__face--front {
+  opacity: 0;
+  visibility: hidden;
 }
 
 .cards__sel {

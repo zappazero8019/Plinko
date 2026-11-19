@@ -288,11 +288,16 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   let seletorEl = null;
   let hud = {};
   let saldoNode = null;
+  let saldoMQVisivel = 0;
   let botaoVisaoTotal = null;
   let contadorVisaoTotal = null;
   let estadoVisaoTotal = null;
   let visaoTotalAtivo = false;
+  // Estados visuais temporários, separados do snapshot lógico do board.
   let visaoTotalRevelados = new Set();
+  let visaoTotalOcultados = new Set();
+  let visaoTotalDuracaoMs = 3000;
+  let controlesCheatMoedas = [];
   let usosVisaoTotal = 0;
   let ultimoTempoSegundos = 0;
   let boardEl = null;
@@ -333,6 +338,18 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     }
   }
 
+  function definirCheatMoedasBloqueado(bloqueado) {
+    for (const controle of controlesCheatMoedas) {
+      controle.entrada.disabled = bloqueado;
+      controle.botao.disabled = bloqueado;
+      controle.bloco.classList.toggle('cards__cheat-moedas--bloqueado', bloqueado);
+      if (bloqueado) {
+        const detalhes = controle.bloco.closest?.('details');
+        if (detalhes) detalhes.open = false;
+      }
+    }
+  }
+
   function limpar() {
     cancelarTimerAmpliacao();
     if (controllerPartida) {
@@ -346,11 +363,15 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     seletorEl = null;
     hud = {};
     saldoNode = null;
+    saldoMQVisivel = 0;
     botaoVisaoTotal = null;
     contadorVisaoTotal = null;
     estadoVisaoTotal = null;
     visaoTotalAtivo = false;
     visaoTotalRevelados = new Set();
+    visaoTotalOcultados = new Set();
+    visaoTotalDuracaoMs = 3000;
+    controlesCheatMoedas = [];
     usosVisaoTotal = 0;
     ultimoTempoSegundos = 0;
     boardEl = null;
@@ -382,6 +403,68 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     btn.type = 'button';
     escutar(btn, 'click', fn);
     return btn;
+  }
+
+  /**
+   * Controle reutilizável do CHEAT "Adicionar moedas". O estado lógico da
+   * carteira fica em core/mq-economy.js; aqui só existe entrada, confirmação e
+   * exibição do saldo. Cada instância recebe o mesmo observer do saldo MQ.
+   */
+  function criarControleAdicionarMoedas({ compacto = false } = {}) {
+    const bloco = el('div', `cards__cheat-moedas${compacto ? ' cards__cheat-moedas--compacto' : ''}`);
+    bloco.dataset.cheatMoedasControle = 'true';
+
+    const rotulo = el('label', 'cards__cheat-moedas__rotulo', 'Adicionar moedas');
+    const entrada = document.createElement('input');
+    entrada.type = 'number';
+    entrada.min = '1';
+    entrada.max = String(Number.MAX_SAFE_INTEGER);
+    entrada.step = '1';
+    entrada.inputMode = 'numeric';
+    entrada.placeholder = 'Quantidade';
+    entrada.dataset.cheatMoedasQuantidade = 'true';
+    entrada.setAttribute('aria-label', 'Quantidade de moedas para adicionar');
+    rotulo.appendChild(entrada);
+
+    const acao = botao('Adicionar moedas', 'btn btn--arcade cards__cheat-moedas__botao', async () => {
+      if (visaoTotalAtivo) {
+        bloco.dataset.erro = 'true';
+        feedback('Aguarde o fim da Visão total', 'erro');
+        return;
+      }
+      try {
+        const resultado = await callbacks.onAdicionarMoedasCheat?.(entrada.value);
+        if (resultado?.ok) {
+          entrada.value = '';
+          bloco.dataset.erro = 'false';
+        } else {
+          bloco.dataset.erro = 'true';
+        }
+        const mensagens = {
+          quantidade_invalida: 'Informe um número inteiro positivo',
+          saldo_excedido: 'Quantidade estoura o limite seguro da carteira',
+          sem_servico: 'Não foi possível adicionar moedas'
+        };
+        feedback(
+          resultado?.mensagem || mensagens[resultado?.erro] || 'Não foi possível adicionar moedas',
+          resultado?.ok ? 'sucesso' : 'erro'
+        );
+      } catch (err) {
+        bloco.dataset.erro = 'true';
+        feedback(`Não foi possível adicionar moedas: ${err?.message || 'erro desconhecido'}`, 'erro');
+      }
+    });
+    acao.dataset.cheatMoedasConfirmar = 'true';
+
+    const saldo = el('span', 'cards__cheat-moedas__saldo',
+      `Saldo atual: ${formatarQuantidadeMQ(saldoMQVisivel)}`);
+    saldo.dataset.cheatMoedasSaldo = 'true';
+
+    bloco.appendChild(rotulo);
+    bloco.appendChild(acao);
+    bloco.appendChild(saldo);
+    controlesCheatMoedas.push({ bloco, entrada, botao: acao, saldo });
+    return bloco;
   }
 
   function mostrarMenu({
@@ -418,8 +501,9 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     menu.appendChild(el('p', 'cards__intro',
       'Jogo da Memória: mais cartas, desafios e progressão.'));
 
+    saldoMQVisivel = formatarQuantidadeMQ(saldoMQ);
     saldoNode = el('div', 'cards__saldo-mq',
-      `🪙 SALDO MEMORY QUEST: ${formatarQuantidadeMQ(saldoMQ)}`);
+      `🪙 SALDO MEMORY QUEST: ${saldoMQVisivel}`);
     saldoNode.dataset.saldoMq = String(formatarQuantidadeMQ(saldoMQ));
     const linhaSaldo = el('div', 'cards__saldo-linha');
     linhaSaldo.appendChild(saldoNode);
@@ -552,6 +636,15 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
           'Prioridade: infinitas → personalizada → padrão da dificuldade. Vale somente para novas partidas.'));
         corpoAvancado.appendChild(blocoCheat);
       }
+
+      // Cheat econômico da carteira MQ, disponível em qualquer modalidade.
+      const blocoCheatMoedas = el('div', 'cards__bloco cards__cheat cards__cheat-moedas-bloco');
+      blocoCheatMoedas.appendChild(el('h4', 'cards__subtitulo', 'CHEAT — carteira Memory Quest'));
+      blocoCheatMoedas.appendChild(criarControleAdicionarMoedas());
+      blocoCheatMoedas.appendChild(el('p', 'cards__dica',
+        'O saldo entra na carteira MQ, mas não conta como moeda conquistada. ' +
+        'Usado durante uma partida, bloqueia as recompensas dela para sempre.'));
+      corpoAvancado.appendChild(blocoCheatMoedas);
 
       const blocoAudio = el('div', 'cards__bloco cards__audio-config');
       blocoAudio.appendChild(el('h4', 'cards__subtitulo', 'Áudio'));
@@ -918,6 +1011,13 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     escutar(visao, 'click', () => callbacks.onVisaoTotal?.());
     botaoVisaoTotal = visao;
     botoesTopo.appendChild(visao);
+
+    // Mesmo cheat do menu, acessível durante a partida para marcar a sessão.
+    const cheatMoedasTopo = el('details', 'cards__cheat-moedas-topo');
+    cheatMoedasTopo.dataset.cheatMoedasTopo = 'true';
+    cheatMoedasTopo.appendChild(el('summary', '', 'CHEAT · +MOEDAS'));
+    cheatMoedasTopo.appendChild(criarControleAdicionarMoedas({ compacto: true }));
+    botoesTopo.appendChild(cheatMoedasTopo);
 
     botoesTopo.appendChild(botao('⚙ Configurações', 'btn btn--text', () => callbacks.onMenu?.()));
     botoesTopo.appendChild(botao('← Coleção', 'btn btn--text', () => callbacks.onVoltar?.()));
@@ -1391,6 +1491,7 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     );
     emApresentacao = previa;
     simbolos = new Map((config.simbolos || []).map((item) => [item.id, item]));
+    if (config.saldoMQ !== undefined) saldoMQVisivel = formatarQuantidadeMQ(config.saldoMQ);
 
     const game = el('section', 'cards__game');
     if (previa) game.classList.add('cards__game--previa');
@@ -1520,11 +1621,15 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   /** Reflete o saldo MQ após uma compra/liquidação sem recriar a tela. */
   function atualizarSaldoMQ(saldo) {
     const texto = formatarQuantidadeMQ(saldo);
+    saldoMQVisivel = texto;
     if (saldoNode) {
       saldoNode.textContent = `🪙 SALDO MEMORY QUEST: ${texto}`;
       saldoNode.dataset.saldoMq = texto;
     }
     if (hud.saldo) hud.saldo.textContent = `SALDO MQ: ${texto}`;
+    for (const controle of controlesCheatMoedas) {
+      controle.saldo.textContent = `Saldo atual: ${texto}`;
+    }
   }
 
   /** Sincroniza o botão da habilidade com o inventário real e o ciclo da habilidade. */
@@ -1535,9 +1640,12 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
       contadorVisaoTotal.textContent = String(usosVisaoTotal);
       contadorVisaoTotal.dataset.usosVisaoTotal = String(usosVisaoTotal);
     }
+    if (Number.isFinite(opcoes.duracaoMs) && opcoes.duracaoMs > 0) {
+      visaoTotalDuracaoMs = opcoes.duracaoMs;
+    }
     if (estadoVisaoTotal) {
       estadoVisaoTotal.textContent = visaoTotalAtivo
-        ? 'ATIVA · 3s'
+        ? `ATIVA · ${Math.ceil(visaoTotalDuracaoMs / 1000)}s`
         : opcoes.estado === 'consumindo' ? 'Processando…' : rotulo;
     }
     if (botaoVisaoTotal) {
@@ -1557,29 +1665,41 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   }
 
   /**
-   * Revelação 100% visual: o snapshot lógico (`board.js`) permanece intacto.
-   * Nenhuma carta pareada é alterada e nenhum acerto é registrado.
+   * Inversão 100% visual: cartas não encontradas ficam reveladas e cartas de
+   * pares já encontrados ficam ocultas. O snapshot lógico (`board.js`) continua
+   * intacto: nenhum par é desfeito e nenhum acerto é registrado.
    */
   function ativarVisaoTotal(snapshot, duracaoMs = 3000) {
     if (!boardEl) return;
     cancelarAmpliacao();
     visaoTotalAtivo = true;
+    visaoTotalDuracaoMs = Math.max(1, Math.ceil(Number(duracaoMs) || 3000));
     visaoTotalRevelados = new Set(
       (snapshot?.cartas || []).filter((carta) => !carta.pareada).map((carta) => carta.id)
     );
+    visaoTotalOcultados = new Set(
+      (snapshot?.cartas || []).filter((carta) => carta.pareada).map((carta) => carta.id)
+    );
     boardEl.classList.add('cards__board--bloqueado');
     boardEl.classList.add('cards__board--visao-total');
-    for (const id of visaoTotalRevelados) {
-      const no = cartasEls.get(id);
+    for (const carta of snapshot?.cartas || []) {
+      const no = cartasEls.get(carta.id);
       if (!no) continue;
-      no.classList.add('cards__card--revelada');
+      const revelada = visaoTotalRevelados.has(carta.id);
+      no.classList.toggle('cards__card--revelada', revelada);
+      no.classList.toggle('cards__card--oculta-visao', visaoTotalOcultados.has(carta.id));
       no.classList.remove('cards__card--selecionada');
-      no.setAttribute('aria-pressed', 'true');
+      no.setAttribute('aria-pressed', revelada ? 'true' : 'false');
       no.disabled = true;
     }
-    definirUsosVisaoTotal(usosVisaoTotal);
-    feedback(`VISÃO TOTAL — ${visaoTotalRevelados.size} cartas reveladas por ${Math.ceil(duracaoMs / 1000)}s`,
-      'previa');
+    definirCheatMoedasBloqueado(true);
+    definirUsosVisaoTotal(usosVisaoTotal, { duracaoMs: visaoTotalDuracaoMs });
+    const segundos = Math.ceil(visaoTotalDuracaoMs / 1000);
+    feedback(
+      `VISÃO TOTAL — ${visaoTotalRevelados.size} cartas reveladas · ` +
+      `${visaoTotalOcultados.size} pares ocultos por ${segundos}s`,
+      'previa'
+    );
     if (botaoVisaoTotal) botaoVisaoTotal.dataset.visaoTotalAtiva = 'true';
   }
 
@@ -1587,11 +1707,14 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
   function restaurarVisaoTotal(snapshot) {
     visaoTotalAtivo = false;
     visaoTotalRevelados = new Set();
+    visaoTotalOcultados = new Set();
+    definirCheatMoedasBloqueado(false);
     if (botaoVisaoTotal) botaoVisaoTotal.dataset.visaoTotalAtiva = 'false';
     if (!boardEl) {
       definirUsosVisaoTotal(usosVisaoTotal);
       return;
     }
+    for (const no of cartasEls.values()) no.classList.remove('cards__card--oculta-visao');
     boardEl.classList.remove('cards__board--visao-total');
     atualizar(snapshot || ultimoSnapshot || { cartas: [], selecionadas: [], aguardandoComparacao: false },
       configAtiva, ultimoTempoSegundos);
@@ -1605,8 +1728,12 @@ export function criarRenderer(root, callbacks = {}, opcoes = {}) {
     for (const carta of snapshot.cartas) {
       const node = cartasEls.get(carta.id);
       if (!node) continue;
-      const revelada = carta.revelada || carta.pareada || cartaReveladaPorVisao(carta.id);
+      const ocultaPelaVisao = visaoTotalOcultados.has(carta.id);
+      const revelada = !ocultaPelaVisao && (
+        carta.revelada || carta.pareada || cartaReveladaPorVisao(carta.id)
+      );
       node.classList.toggle('cards__card--revelada', revelada);
+      node.classList.toggle('cards__card--oculta-visao', ocultaPelaVisao);
       node.classList.toggle('cards__card--pareada', carta.pareada);
       node.classList.toggle(
         'cards__card--selecionada',

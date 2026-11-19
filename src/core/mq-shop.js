@@ -31,7 +31,7 @@ export const ITEM_VISAO_TOTAL = Object.freeze({
   id: HABILIDADE_VISAO_TOTAL,
   nome: 'Visão total',
   preco: PRECO_VISAO_TOTAL,
-  descricao: 'Revela todas as cartas não combinadas por 3 segundos durante uma partida.',
+  descricao: 'Inverte visualmente o tabuleiro: revela cartas não encontradas e oculta pares já encontrados por 5 a 25 s, conforme a dificuldade.',
   icone: 'assets/icons/visao.png'
 });
 

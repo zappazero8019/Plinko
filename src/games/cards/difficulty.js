@@ -27,9 +27,9 @@ export const PROGRESSAO_CARTAS = Object.freeze([
 export const TEMPOS_PREVIA_CARTAS = Object.freeze({
   facil: 3000,
   normal: 4000,
-  dificil: 5000,
-  muitodificil: 6000,
-  extremo: 8000
+  dificil: 10000,
+  muitodificil: 15000,
+  extremo: 20000
 });
 
 /** Retorna o tempo de prévia em ms; valores desconhecidos caem em Normal. */

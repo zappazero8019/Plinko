@@ -34,7 +34,8 @@ import {
 import {
   obterSaldoMQ,
   liquidarSessaoMQ,
-  registrarObservadorCarteiraMQ
+  registrarObservadorCarteiraMQ,
+  adicionarMoedasCheatMQ
 } from '../../core/mq-economy.js';
 import { criarRastreadorRecompensas } from './recompensas.js';
 import { criarControladorVisaoTotal } from './visao-total.js';
@@ -208,7 +209,8 @@ function ativarVisaoTotal() {
 
   return controladorVisaoTotal.ativar({
     partidaAtiva: true,
-    aguardandoComparacao: sessao.estado().aguardandoComparacao
+    aguardandoComparacao: sessao.estado().aguardandoComparacao,
+    dificuldade: configAtual.dificuldade
   });
 }
 
@@ -225,6 +227,35 @@ function sinalizarCheat(tipo, detalhes = {}, avisar = true) {
   if (!avisar) return;
   renderer?.feedback('RECOMPENSAS BLOQUEADAS: CHEAT', 'erro');
   atualizarEconomiaNaTela();
+}
+
+/**
+ * CHEAT econômico: credita na carteira MQ e, se houver partida em andamento,
+ * compromete a sessão atual sem remover as moedas já creditadas ao terminar.
+ */
+async function adicionarMoedasCheat(valor) {
+  const sessaoNoMomento = sessao;
+  const rastreadorNoMomento = rastreador;
+  const resultado = await adicionarMoedasCheatMQ(valor);
+  if (!resultado.ok) return resultado;
+
+  const partidaAtiva = sessao === sessaoNoMomento
+    && rastreador === rastreadorNoMomento
+    && !partidaFinalizada;
+  if (partidaAtiva) {
+    sinalizarCheat('adicionar_moedas', {
+      origem: 'partida',
+      quantidade: resultado.quantidade
+    }, false);
+  }
+
+  return {
+    ...resultado,
+    partidaComprometida: partidaAtiva,
+    mensagem: partidaAtiva
+      ? `+${resultado.quantidade} moedas adicionadas · recompensas desta partida bloqueadas`
+      : `+${resultado.quantidade} moedas adicionadas à carteira MQ`
+  };
 }
 
 /** Cancela revelação em andamento sem devolver o uso já consumido. */
@@ -484,12 +515,19 @@ async function finalizarPartida({ derrota = false, idSessaoEsperado = null } = {
     : config.dificuldade;
   const desafios = vitoriaLegitima ? avaliarDesafios(stats) : [];
   const nomeDificuldade = NOMES_DIFICULDADE[config.dificuldade] || config.dificuldade;
+  const cheatPadrao = config.cheat || 'normal';
+  // Preserva o rótulo original das tentativas e acrescenta cheats econômicos
+  // usados na partida, para que o registro não pareça uma vitória normal.
+  const cheatRegistro = rastreador.motivosCheat.length
+    && !rastreador.motivosCheat.includes(cheatPadrao)
+    ? [cheatPadrao, ...rastreador.motivosCheat].join(', ')
+    : cheatPadrao;
 
   try {
     await registrarPartida({
       ...stats,
       modalidade: config.modalidade,
-      cheat: config.cheat || 'normal',
+      cheat: cheatRegistro,
       vitoria,
       desafios,
       layoutIndice: config.layoutIndice ?? null,
@@ -841,6 +879,7 @@ async function init() {
       tratarEvento(sessao.selecionar(id));
     },
     onVisaoTotal: () => { ativarVisaoTotal(); },
+    onAdicionarMoedasCheat: (valor) => adicionarMoedasCheat(valor),
     onMenu: () => abrirMenu(),
     onReiniciar: () => iniciarPartida()
   });
@@ -848,8 +887,8 @@ async function init() {
   controladorVisaoTotal = criarControladorVisaoTotal({
     usos: usosVisaoTotalAtual,
     consumir: consumirUsoVisaoTotal,
-    onEstado: ({ usos, estado }) => {
-      renderer?.definirUsosVisaoTotal(usos, { estado });
+    onEstado: ({ usos, estado, duracaoMs }) => {
+      renderer?.definirUsosVisaoTotal(usos, { estado, duracaoMs });
     },
     onAtivar: ({ duracaoMs }) => {
       renderer?.ativarVisaoTotal(sessao?.estado(), duracaoMs);

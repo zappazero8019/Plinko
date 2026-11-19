@@ -20,7 +20,50 @@ import {
 } from './mq-economy.js';
 
 export const MQ_TIPO_USO_VISAO = 'uso_visao_total';
-export const DURACAO_VISAO_TOTAL_MS = 3000;
+
+/**
+ * Duração da Visão total por dificuldade da partida no momento da ativação.
+ * Valores desconhecidos caem em Normal, a mesma política usada pela prévia.
+ */
+export const TEMPOS_VISAO_TOTAL_MS = Object.freeze({
+  facil: 5000,
+  normal: 10000,
+  dificil: 15000,
+  muitodificil: 20000,
+  extremo: 25000
+});
+
+/** Compatibilidade: duração padrão (Normal) para contextos sem dificuldade. */
+export const DURACAO_VISAO_TOTAL_MS = TEMPOS_VISAO_TOTAL_MS.normal;
+
+const ALIASES_DIFICULDADE_VISAO = Object.freeze({
+  'muitodificil': 'muitodificil',
+  'muitodificuldade': 'muitodificil',
+  'muitodifficult': 'muitodificil',
+  'veryhard': 'muitodificil',
+  'extremo': 'extremo',
+  'extreme': 'extremo',
+  'dificil': 'dificil',
+  'difficult': 'dificil',
+  'hard': 'dificil',
+  'facil': 'facil',
+  'easy': 'facil',
+  'normal': 'normal',
+  'medium': 'normal'
+});
+
+/** Normaliza rótulos de dificuldade usados pelo expandido, legado e testes. */
+export function normalizarDificuldadeVisaoTotal(valor) {
+  const chave = String(valor ?? '').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s_-]+/g, '');
+  return ALIASES_DIFICULDADE_VISAO[chave] || 'normal';
+}
+
+/** Retorna a duração em ms da habilidade para a dificuldade informada. */
+export function obterTempoVisaoTotal(dificuldade) {
+  return TEMPOS_VISAO_TOTAL_MS[normalizarDificuldadeVisaoTotal(dificuldade)];
+}
 
 function requestPromise(request) {
   return new Promise((resolve, reject) => {

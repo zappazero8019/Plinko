@@ -4,7 +4,7 @@
  * Compatível com subdiretórios do GitHub Pages (usando self.registration.scope).
  */
 
-const CACHE_NAME = 'memory-quest-v21';
+const CACHE_NAME = 'memory-quest-v23';
 const OFFLINE_URL = './index.html';
 
 // Arquivos essenciais para funcionamento offline (caminhos relativos ao escopo do SW)

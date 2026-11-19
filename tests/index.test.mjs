@@ -504,8 +504,12 @@ import {
   liquidarSessaoMQ,
   registrarObservadorCarteiraMQ,
   notificarCarteiraMQ,
+  adicionarMoedasCheatMQ,
+  normalizarQuantidadeCheatMoedas,
   MQ_TIPO_PAR,
-  MQ_TIPO_BONUS
+  MQ_TIPO_BONUS,
+  MQ_TIPO_CHEAT_MOEDAS,
+  MQ_LIMITE_SALDO
 } from '../src/core/mq-economy.js';
 import {
   PRECO_VISAO_TOTAL,
@@ -519,6 +523,8 @@ import {
 import {
   MQ_TIPO_USO_VISAO,
   DURACAO_VISAO_TOTAL_MS,
+  TEMPOS_VISAO_TOTAL_MS,
+  obterTempoVisaoTotal,
   criarChaveOperacaoVisaoTotal,
   obterUsosVisaoTotal,
   consumirUsoVisaoTotal
@@ -3407,9 +3413,9 @@ async function grupoAuditoria() {
       assert.strictEqual(metadata[0].versaoBanco, 4);
     });
 
-    await test('service worker usa cache v21 com ícones, economia e estatísticas', async () => {
+    await test('service worker usa cache v23 com ícones, economia e estatísticas', async () => {
       const sw = readFileSync(new URL('../service-worker.js', import.meta.url), 'utf8');
-      assert.match(sw, /const CACHE_NAME = 'memory-quest-v21'/);
+      assert.match(sw, /const CACHE_NAME = 'memory-quest-v23'/);
       assert.ok(!sw.includes('smb3-original.js'), 'adaptador removido do precache');
       const lista = sw.match(/const ESSENTIAL_ASSETS = \[([\s\S]*?)\];/)[1];
       const assets = lista.match(/'\.\/[^']*'/g);
@@ -4158,7 +4164,7 @@ async function grupoIconesPWA() {
       for (const nome of esperados) {
         assert.ok(sw.includes(`'./assets/icons/${nome}'`), `${nome} ausente no precache`);
       }
-      assert.match(sw, /const CACHE_NAME = 'memory-quest-v21'/);
+      assert.match(sw, /const CACHE_NAME = 'memory-quest-v23'/);
       assert.ok(
         html.includes('<link rel="apple-touch-icon" href="assets/icons/icon-192.png" />')
       );
@@ -4176,9 +4182,9 @@ async function grupoEtapa2() {
       assert.deepEqual(TEMPOS_PREVIA_CARTAS, {
         facil: 3000,
         normal: 4000,
-        dificil: 5000,
-        muitodificil: 6000,
-        extremo: 8000
+        dificil: 10000,
+        muitodificil: 15000,
+        extremo: 20000
       });
       for (const chave of PROGRESSAO_CARTAS) {
         assert.strictEqual(obterTempoPrevia(chave), TEMPOS_PREVIA_CARTAS[chave]);
@@ -4264,7 +4270,7 @@ async function grupoEtapa2() {
         setInterval: () => ({ cancelado: false }),
         clearInterval: () => {}
       });
-      assert.strictEqual(controle.duracaoMs, 8000);
+      assert.strictEqual(controle.duracaoMs, 20000);
       controle.parar();
     });
 
@@ -4401,9 +4407,9 @@ async function grupoEtapa2() {
         assert.deepEqual(dificuldades.map((no) => [no.dataset.dificuldadeInicial, no.dataset.tempoPrevia]), [
           ['facil', '3000'],
           ['normal', '4000'],
-          ['dificil', '5000'],
-          ['muitodificil', '6000'],
-          ['extremo', '8000']
+          ['dificil', '10000'],
+          ['muitodificil', '15000'],
+          ['extremo', '20000']
         ]);
         assert.strictEqual(dificuldades[1].getAttribute('aria-pressed'), 'true');
         const progressao = nos.find((no) => no.dataset?.progressaoAutomatica !== undefined);
@@ -6280,16 +6286,16 @@ async function grupoFase2VisaoTotal() {
       assert.strictEqual(controlador.usos, 1);
     });
 
-    await test('9. revelação dura exatamente 3 segundos e restaura uma vez', async () => {
+    await test('9. revelação dura o tempo padrão atual e restaura uma vez', async () => {
       const { ag, eventos, controlador } = controladorFake({ usos: 1 });
       const resultado = await controlador.ativar({});
       assert.strictEqual(resultado.ok, true);
       assert.strictEqual(controlador.ativa, true);
       assert.strictEqual(eventos.ativar.length, 1);
       assert.strictEqual(eventos.ativar[0].duracaoMs, DURACAO_VISAO_TOTAL_MS);
-      assert.strictEqual(DURACAO_VISAO_TOTAL_MS, 3000);
+      assert.strictEqual(DURACAO_VISAO_TOTAL_MS, 10000);
       assert.strictEqual(ag.agendados.length, 1);
-      assert.strictEqual(ag.agendados[0].ms, 3000);
+      assert.strictEqual(ag.agendados[0].ms, 10000);
 
       ag.executarTodos();
       assert.strictEqual(controlador.ativa, false);
@@ -6423,9 +6429,10 @@ async function grupoFase2VisaoTotal() {
         const partida = criarPartida(config);
         const antes = partida.estado();
         const { eventos, controlador, ag } = controladorFake({ usos: 1 });
-        const resultado = await controlador.ativar({});
+        const resultado = await controlador.ativar({ dificuldade: chave });
         assert.strictEqual(resultado.ok, true, `ativação em ${chave}`);
-        assert.strictEqual(eventos.ativar[0].duracaoMs, 3000);
+        assert.strictEqual(eventos.ativar[0].duracaoMs, TEMPOS_VISAO_TOTAL_MS[chave]);
+        assert.strictEqual(ag.agendados[0].ms, TEMPOS_VISAO_TOTAL_MS[chave]);
         ag.executarTodos();
         assert.deepEqual(partida.estado(), antes, `estado lógico em ${chave}`);
       }
@@ -6455,8 +6462,11 @@ async function grupoFase2VisaoTotal() {
         assert.strictEqual(naoPareadas.length, 98);
         assert.ok(naoPareadas.every((no) => no.classList.contains('cards__card--revelada')));
         assert.ok(naoPareadas.every((no) => no.disabled));
-        assert.ok(cartas.filter((no) => no.classList.contains('cards__card--pareada'))
-          .every((no) => no.classList.contains('cards__card--revelada')));
+        const pareadas = cartas.filter((no) => no.classList.contains('cards__card--pareada'));
+        assert.strictEqual(pareadas.length, 2);
+        assert.ok(pareadas.every((no) => no.classList.contains('cards__card--oculta-visao')));
+        assert.ok(pareadas.every((no) => !no.classList.contains('cards__card--revelada')));
+        assert.ok(pareadas.every((no) => no.disabled));
 
         const board = encontrarNo(cenario.raiz, (no) => no.classList.contains('cards__board'));
         assert.ok(board.classList.contains('cards__board--visao-total'));
@@ -6466,6 +6476,8 @@ async function grupoFase2VisaoTotal() {
         cenario.renderer.restaurarVisaoTotal(snapshot);
         assert.ok(cartas.filter((no) => !no.classList.contains('cards__card--pareada'))
           .every((no) => !no.classList.contains('cards__card--revelada')));
+        assert.ok(cartas.every((no) => !no.classList.contains('cards__card--oculta-visao')));
+        assert.ok(pareadas.every((no) => no.classList.contains('cards__card--revelada')));
         assert.ok(!board.classList.contains('cards__board--bloqueado'));
       } finally {
         cenario.restaurar();
@@ -6616,6 +6628,394 @@ async function grupoFase2VisaoTotal() {
 }
 
 // ============================================================================
+// AJUSTES — PRÉVIA, VISÃO TOTAL POR DIFICULDADE E CHEAT DE MOEDAS
+// ============================================================================
+
+async function grupoAjustesDificuldadeVisaoCheats() {
+  await grupo('AJUSTES — prévia, Visão total por dificuldade e CHEAT de moedas', async () => {
+    await test('prévia e Visão total usam tabelas por dificuldade com fallback Normal', async () => {
+      assert.deepEqual({ ...TEMPOS_PREVIA_CARTAS }, {
+        facil: 3000,
+        normal: 4000,
+        dificil: 10000,
+        muitodificil: 15000,
+        extremo: 20000
+      });
+      assert.deepEqual({ ...TEMPOS_VISAO_TOTAL_MS }, {
+        facil: 5000,
+        normal: 10000,
+        dificil: 15000,
+        muitodificil: 20000,
+        extremo: 25000
+      });
+      assert.strictEqual(DURACAO_VISAO_TOTAL_MS, 10000);
+      for (const chave of PROGRESSAO_CARTAS) {
+        assert.strictEqual(obterTempoPrevia(chave), TEMPOS_PREVIA_CARTAS[chave]);
+        assert.strictEqual(obterTempoVisaoTotal(chave), TEMPOS_VISAO_TOTAL_MS[chave]);
+      }
+      assert.strictEqual(obterTempoVisaoTotal('Muito Difícil'), 20000);
+      assert.strictEqual(obterTempoVisaoTotal('EXTREMO'), 25000);
+      assert.strictEqual(obterTempoVisaoTotal('desconhecida'), 10000);
+      assert.strictEqual(obterTempoVisaoTotal(null), 10000);
+    });
+
+    await test('duração da Visão total é decidida no instante de cada ativação', async () => {
+      const ag = criarAgendadorFake();
+      const ativacoes = [];
+      const estados = [];
+      let estoque = 3;
+      const controlador = criarControladorVisaoTotal({
+        usos: estoque,
+        agora: () => 1000,
+        setTimeout: ag.setTimeoutFake.bind(ag),
+        clearTimeout: ag.clearTimeoutFake.bind(ag),
+        consumir: async () => {
+          estoque -= 1;
+          return { ok: true, estoque, duplicado: false };
+        },
+        onAtivar: (evento) => ativacoes.push(evento),
+        onEstado: (evento) => estados.push(evento)
+      });
+
+      const facil = await controlador.ativar({ partidaAtiva: true, dificuldade: 'facil' });
+      assert.strictEqual(facil.ok, true);
+      assert.strictEqual(controlador.duracaoMs, 5000);
+      assert.strictEqual(ag.agendados[0].ms, 5000);
+      ag.executarTodos();
+
+      const extremo = await controlador.ativar({ partidaAtiva: true, dificuldade: 'extremo' });
+      assert.strictEqual(extremo.ok, true);
+      assert.strictEqual(controlador.duracaoMs, 25000);
+      assert.strictEqual(ag.agendados[1].ms, 25000);
+      assert.deepEqual(ativacoes.map((evento) => evento.duracaoMs), [5000, 25000]);
+      assert.strictEqual(estados.at(-1).duracaoMs, 25000);
+      ag.executarTodos();
+
+      const explicita = await controlador.ativar({
+        partidaAtiva: true, dificuldade: 'extremo', duracaoMs: 7777
+      });
+      assert.strictEqual(explicita.ok, true);
+      assert.strictEqual(controlador.duracaoMs, 7777, 'contexto explícito vence a dificuldade');
+      assert.strictEqual(ag.agendados[2].ms, 7777);
+      controlador.cancelar('teste');
+    });
+
+    await test('CHEAT aceita somente inteiros positivos seguros', async () => {
+      const validos = [
+        [1, 1],
+        [25, 25],
+        [MQ_LIMITE_SALDO, MQ_LIMITE_SALDO],
+        ['1', 1],
+        [' 25 ', 25],
+        [String(MQ_LIMITE_SALDO), MQ_LIMITE_SALDO]
+      ];
+      for (const [entrada, esperado] of validos) {
+        assert.strictEqual(normalizarQuantidadeCheatMoedas(entrada), esperado,
+          `entrada válida rejeitada: ${String(entrada)}`);
+      }
+
+      const invalidos = [
+        0, -0, -1, 1.5, '1.5', '0', '-2', '+2', '1e3', '', '   ', 'abc',
+        null, undefined, NaN, Infinity, -Infinity, MQ_LIMITE_SALDO + 1,
+        true, false, {}, []
+      ];
+      for (const entrada of invalidos) {
+        assert.strictEqual(normalizarQuantidadeCheatMoedas(entrada), 0,
+          `entrada inválida aceita: ${String(entrada)}`);
+      }
+    });
+
+    await test('CHEAT credita na carteira MQ com transação identificável e sem virar conquista', async () => {
+      await resetDB();
+      await openDatabase();
+      await addCoins(77, { descricao: 'Plinko legado — não deve mudar' });
+      const saldoPlinko = await getSaldo();
+      const transacoesPlinko = (await getAll('transactions')).length;
+
+      await put('mqWallet', {
+        id: MQ_WALLET_ID,
+        saldo: 10,
+        totalConquistado: 10,
+        totalLiquido: 10,
+        habilidades: { visaoTotal: 2 },
+        atualizadoEm: 1
+      });
+      await put('mqTransactions', {
+        walletId: MQ_WALLET_ID, sessionId: 'par_antigo',
+        tipo: MQ_TIPO_PAR, quantidade: 10, createdAt: 1
+      });
+
+      const notificacoes = [];
+      const remover = registrarObservadorCarteiraMQ(() => { notificacoes.push('mq'); });
+      try {
+        const antes = await obterMoedasConquistadasMQ();
+        assert.strictEqual(antes.total, 10);
+        assert.strictEqual(antes.transacoes, 1);
+
+        const resultado = await adicionarMoedasCheatMQ('25');
+        assert.strictEqual(resultado.ok, true);
+        assert.strictEqual(resultado.quantidade, 25);
+        assert.strictEqual(resultado.saldo, 35);
+        assert.ok(resultado.transacaoId);
+
+        const carteira = await get('mqWallet', MQ_WALLET_ID);
+        assert.strictEqual(carteira.saldo, 35);
+        assert.strictEqual(carteira.totalConquistado, 10, 'cheat não conta como conquistado');
+        assert.strictEqual(carteira.totalLiquido, 10);
+        assert.deepEqual(carteira.habilidades, { visaoTotal: 2 }, 'estoque intacto');
+        assert.strictEqual((await getAll('mqWallet')).length, 1, 'nenhuma terceira carteira');
+        assert.strictEqual(PRECO_VISAO_TOTAL, 100, 'preço da habilidade intacto');
+
+        const transacoes = await getAll('mqTransactions');
+        const credito = transacoes.find((item) => item.tipo === MQ_TIPO_CHEAT_MOEDAS);
+        assert.ok(credito, 'transação identificável do CHEAT ausente');
+        assert.strictEqual(credito.quantidade, 25);
+        assert.strictEqual(credito.sessionId, resultado.transacaoId);
+        assert.strictEqual(credito.idempotencyKey, resultado.transacaoId);
+        assert.strictEqual(credito.origem, 'cheat');
+        assert.strictEqual(credito.saldoAnterior, 10);
+        assert.strictEqual(credito.saldoPosterior, 35);
+        assert.match(credito.descricao, /CHEAT/);
+        assert.strictEqual(notificacoes.length, 1, 'saldo reativo notificado');
+
+        const segundo = await adicionarMoedasCheatMQ(7);
+        assert.strictEqual(segundo.ok, true);
+        assert.strictEqual(segundo.saldo, 42);
+        assert.notStrictEqual(segundo.transacaoId, resultado.transacaoId);
+        assert.strictEqual(
+          (await getAll('mqTransactions')).filter((item) => item.tipo === MQ_TIPO_CHEAT_MOEDAS).length,
+          2
+        );
+
+        const depois = await obterMoedasConquistadasMQ();
+        assert.strictEqual(depois.total, 10, 'moedas de CHEAT ficam fora das conquistadas');
+        assert.strictEqual(depois.transacoes, 1);
+        assert.strictEqual(await obterSaldoMQ(), 42);
+        assert.strictEqual(await getSaldo(), saldoPlinko, 'carteira Plinko intacta');
+        assert.strictEqual((await getAll('transactions')).length, transacoesPlinko);
+      } finally {
+        remover();
+      }
+    });
+
+    await test('CHEAT rejeita inválidos e estouro sem qualquer escrita', async () => {
+      await resetDB();
+      await openDatabase();
+      await put('mqWallet', {
+        id: MQ_WALLET_ID,
+        saldo: MQ_LIMITE_SALDO - 1,
+        totalConquistado: 0,
+        totalLiquido: 0,
+        habilidades: { visaoTotal: 0 },
+        atualizadoEm: 1
+      });
+      const transacoesAntes = (await getAll('mqTransactions')).length;
+
+      for (const valor of [0, -5, 1.5, '1.5', 'x', '', null, NaN]) {
+        const resultado = await adicionarMoedasCheatMQ(valor);
+        assert.strictEqual(resultado.ok, false);
+        assert.strictEqual(resultado.erro, 'quantidade_invalida');
+      }
+
+      const estouro = await adicionarMoedasCheatMQ(2);
+      assert.strictEqual(estouro.ok, false);
+      assert.strictEqual(estouro.erro, 'saldo_excedido');
+      assert.strictEqual(estouro.saldo, MQ_LIMITE_SALDO - 1);
+
+      assert.strictEqual((await getAll('mqTransactions')).length, transacoesAntes);
+      assert.strictEqual((await get('mqWallet', MQ_WALLET_ID)).saldo, MQ_LIMITE_SALDO - 1);
+    });
+
+    await test('CHEAT durante a partida compromete a sessão sem remover as moedas ao final', async () => {
+      await resetDB();
+      await openDatabase();
+      await put('mqWallet', {
+        id: MQ_WALLET_ID, saldo: 0, totalConquistado: 0, totalLiquido: 0,
+        habilidades: { visaoTotal: 0 }, atualizadoEm: 1
+      });
+
+      const credito = await adicionarMoedasCheatMQ(60);
+      assert.strictEqual(credito.ok, true);
+
+      const rastreador = criarRastreadorRecompensas({
+        sessionId: 'sessao_comprometida',
+        dificuldade: 'facil',
+        tentativasIniciais: 5,
+        tempoAlvo: 60
+      });
+      rastreador.registrarPar();
+      assert.strictEqual(rastreador.rewardsEligible, true);
+      assert.strictEqual(
+        rastreador.registrarCheat('adicionar_moedas', { origem: 'partida', quantidade: 60 }),
+        true
+      );
+      assert.strictEqual(rastreador.rewardsEligible, false, 'bloqueio irreversível');
+      rastreador.registrarCheat('adicionar_moedas');
+      assert.deepEqual(rastreador.motivosCheat, ['adicionar_moedas']);
+
+      const liquido = rastreador.finalizar({
+        vitoria: true, tentativas: 1, tentativasRestantes: 4, tempoSegundos: 10
+      });
+      assert.strictEqual(liquido.elegivel, false);
+      assert.strictEqual(liquido.total, 0);
+
+      const fechamento = await liquidarSessaoMQ(liquido);
+      assert.strictEqual(fechamento.saldo, 60, 'crédito do CHEAT permanece');
+      assert.strictEqual(await obterSaldoMQ(), 60);
+      const conquistadas = await obterMoedasConquistadasMQ();
+      assert.strictEqual(conquistadas.total, 0);
+      assert.strictEqual(conquistadas.transacoes, 0);
+    });
+
+    await test('integração liga o CHEAT ao rastreador sem tratar a Visão total como CHEAT', async () => {
+      const indice = readFileSync(new URL('../src/games/cards/index.js', import.meta.url), 'utf8');
+      assert.match(indice, /async function adicionarMoedasCheat\(valor\)/);
+      assert.match(indice, /adicionarMoedasCheatMQ\(valor\)/);
+      assert.match(indice, /sinalizarCheat\('adicionar_moedas'/);
+      assert.match(indice, /onAdicionarMoedasCheat: \(valor\) => adicionarMoedasCheat\(valor\)/);
+      assert.ok(indice.includes('&& !partidaFinalizada'), 'só marca sessão ativa');
+      assert.ok(!indice.includes("sinalizarCheat('visao"), 'Visão total continua habilidade paga');
+      assert.match(indice, /dificuldade: configAtual\.dificuldade/);
+    });
+
+    await test('controle do CHEAT aparece no menu e na partida e reage ao saldo', async () => {
+      let proximoResultado = { ok: true, saldo: 30, quantidade: 25 };
+      const chamadas = [];
+      const cenario = criarCenarioRendererNovo({
+        onAdicionarMoedasCheat: (valor) => {
+          chamadas.push(valor);
+          return Promise.resolve(proximoResultado);
+        }
+      });
+      const aguardarCallback = () => new Promise((resolve) => process.nextTick(resolve));
+
+      try {
+        cenario.renderer.mostrarMenu({ modo: 'expandido', saldoMQ: 5 });
+        let controles = percorrerNo(cenario.raiz)
+          .filter((no) => no.dataset?.cheatMoedasControle === 'true');
+        assert.strictEqual(controles.length, 1, 'controle presente no menu');
+        const entrada = encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasQuantidade === 'true');
+        const confirmar = encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasConfirmar === 'true');
+        const saldoControle = encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasSaldo === 'true');
+        assert.strictEqual(saldoControle.textContent, 'Saldo atual: 5');
+
+        entrada.value = '25';
+        confirmar.click();
+        await aguardarCallback();
+        assert.deepEqual(chamadas, ['25']);
+        assert.strictEqual(entrada.value, '');
+
+        cenario.renderer.atualizarSaldoMQ(30);
+        assert.strictEqual(saldoControle.textContent, 'Saldo atual: 30');
+        assert.strictEqual(
+          encontrarNo(cenario.raiz, (no) => no.classList.contains('cards__saldo-mq')).dataset.saldoMq,
+          '30'
+        );
+
+        proximoResultado = { ok: false, erro: 'quantidade_invalida' };
+        entrada.value = '1.5';
+        confirmar.click();
+        await aguardarCallback();
+        assert.deepEqual(chamadas, ['25', '1.5']);
+        assert.strictEqual(entrada.value, '1.5', 'entrada inválida não é limpa');
+        assert.strictEqual(controles[0].dataset.erro, 'true');
+
+        const config = criarConfigExpandida('facil', criarRng(7));
+        const snapshot = criarSessao(config).estado();
+        cenario.renderer.mostrarPartida(config, snapshot);
+        controles = percorrerNo(cenario.raiz)
+          .filter((no) => no.dataset?.cheatMoedasControle === 'true');
+        assert.strictEqual(controles.length, 1, 'controle presente no topo da partida');
+        assert.ok(controles[0].classList.contains('cards__cheat-moedas--compacto'));
+        assert.ok(encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasTopo === 'true'));
+
+        const estado = encontrarNo(cenario.raiz, (no) => no.classList.contains('cards__visao-total__estado'));
+        cenario.renderer.ativarVisaoTotal(snapshot, 25000);
+        assert.strictEqual(estado.textContent, 'ATIVA · 25s', 'feedback mostra a duração da dificuldade');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('Visão total bloqueia o CHEAT na partida e libera ao restaurar', async () => {
+      const chamadas = [];
+      const cenario = criarCenarioRendererNovo({
+        onAdicionarMoedasCheat: (valor) => {
+          chamadas.push(valor);
+          return Promise.resolve({ ok: true, saldo: 1, quantidade: 1 });
+        }
+      });
+      try {
+        const config = criarConfigExpandida('facil', criarRng(9));
+        const snapshot = criarSessao(config).estado();
+        cenario.renderer.mostrarPartida(config, snapshot);
+        const entrada = encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasQuantidade === 'true');
+        const confirmar = encontrarNo(cenario.raiz, (no) => no.dataset?.cheatMoedasConfirmar === 'true');
+
+        cenario.renderer.ativarVisaoTotal(snapshot, 5000);
+        assert.strictEqual(entrada.disabled, true);
+        assert.strictEqual(confirmar.disabled, true);
+        entrada.value = '10';
+        confirmar.click();
+        assert.deepEqual(chamadas, [], 'clique durante a habilidade não credita');
+
+        cenario.renderer.restaurarVisaoTotal(snapshot);
+        assert.strictEqual(entrada.disabled, false);
+        assert.strictEqual(confirmar.disabled, false);
+        confirmar.click();
+        assert.deepEqual(chamadas, ['10'], 'controle volta a funcionar após a restauração');
+      } finally {
+        cenario.restaurar();
+      }
+    });
+
+    await test('CSS preserva a inversão visual e acomoda o CHEAT em 360 px', async () => {
+      const css = readFileSync(
+        new URL('../src/games/cards/styles.css', import.meta.url), 'utf8'
+      );
+      const indiceRevelada = css.indexOf('.cards__card--revelada .cards__card-inner');
+      const indiceOculta = css.indexOf('.cards__card--oculta-visao .cards__card-inner');
+      assert.ok(indiceRevelada >= 0 && indiceOculta > indiceRevelada,
+        'regra de ocultação vem depois da virada padrão');
+      assert.match(css, /\.cards__card--oculta-visao \.cards__card-inner\s*\{\s*transform:\s*rotateY\(0deg\)/);
+      assert.match(css, /\.cards__card--oculta-visao \.cards__face--front\s*\{\s*opacity:\s*0/);
+      assert.match(css, /\.cards__cheat-moedas\s*\{[^}]*max-width:\s*100%/);
+      assert.match(css, /\.cards__cheat-moedas--compacto input\[type='number'\]\s*\{[^}]*width:\s*92px/);
+      assert.match(css, /\.cards__board--bloqueado\s*\{[^}]*pointer-events:\s*none/);
+    });
+
+    await test('saldo do CHEAT é reativo em cabeçalho, perfil, loja e HUD', async () => {
+      const main = readFileSync(new URL('../src/app/main.js', import.meta.url), 'utf8');
+      const renderer = readFileSync(
+        new URL('../src/games/cards/renderer.js', import.meta.url), 'utf8'
+      );
+      const shop = readFileSync(new URL('../src/ui/shop.js', import.meta.url), 'utf8');
+      assert.match(
+        main,
+        /registrarObservadorCarteiraMQ\(\(\) => \{[\s\S]*?atualizarCarteiraUI\(\)[\s\S]*?renderizarPerfil/
+      );
+      assert.match(shop, /registrarObservadorCarteiraMQ/);
+      assert.match(renderer, /function atualizarSaldoMQ[\s\S]*?hud\.saldo[\s\S]*?controlesCheatMoedas/);
+    });
+
+    await test('README e loja documentam prévia, durações e CHEAT de moedas', async () => {
+      assert.match(ITEM_VISAO_TOTAL.descricao, /5 a 25 s/);
+      assert.match(ITEM_VISAO_TOTAL.descricao, /oculta pares já encontrados/);
+      assert.ok(!ITEM_VISAO_TOTAL.descricao.includes('3 segundos'));
+      const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+      assert.match(readme, /\| Difícil\s+\| 48\s+\| 24\s+\| 32\s+\| 10 s/);
+      assert.match(readme, /\| Muito difícil \|\s*72\s*\|\s*36\s*\|\s*45\s*\|\s*15 s/);
+      assert.match(readme, /\| Extremo\s+\| 100\s+\| 50\s+\| 60\s+\| 20 s/);
+      assert.match(readme, /Fácil\s+\| 3 s\s+\| 5 s/);
+      assert.match(readme, /Extremo\s+\| 20 s\s+\| 25 s/);
+      assert.match(readme, /100 moedas MQ/);
+      assert.match(readme, /cheat_adicionar_moedas/);
+      assert.match(readme, /não entram em "moedas conquistadas"/);
+    });
+  });
+}
+
+// ============================================================================
 // EXECUÇÃO
 // ============================================================================
 
@@ -6651,6 +7051,7 @@ async function main() {
   await grupoEtapa4();
   await grupoFase1Loja();
   await grupoFase2VisaoTotal();
+  await grupoAjustesDificuldadeVisaoCheats();
 
   delete globalThis.window;
   closeDatabase();

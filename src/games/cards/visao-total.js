@@ -2,7 +2,8 @@
  * games/cards/visao-total.js — Controlador da habilidade Visão total (Fase 2)
  *
  * Módulo puro (sem DOM, sem IndexedDB): coordena o consumo de um uso, o período
- * de 3 segundos e o cancelamento seguro. Toda decisão de regra da partida
+ * da habilidade e o cancelamento seguro. A duração é decidida no momento da
+ * ativação pela dificuldade da partida. Toda decisão de regra da partida
  * (comparação pendente, seleção isolada, pares) permanece em `board.js`; toda
  * revelação visual permanece no renderer. Aqui só existe o ciclo da habilidade.
  *
@@ -13,6 +14,7 @@
 
 import {
   DURACAO_VISAO_TOTAL_MS,
+  obterTempoVisaoTotal,
   criarChaveOperacaoVisaoTotal
 } from '../../core/mq-habilidade.js';
 
@@ -27,7 +29,8 @@ function inteiroSeguro(valor) {
  * @param {function(function(): void, number): number} [opcoes.setTimeout]
  * @param {function(number): void} [opcoes.clearTimeout]
  * @param {function(string): Promise<object>} [opcoes.consumir]
- * @param {number} [opcoes.duracaoMs]
+ * @param {number} [opcoes.duracaoMs] - duração fixa opcional (testes/legado)
+ * @param {function(string): number} [opcoes.obterDuracaoMs] - resolução customizada
  * @param {function(object): void} [opcoes.onEstado]
  * @param {function(object): void} [opcoes.onAtivar]
  * @param {function(object): void} [opcoes.onRestaurar]
@@ -44,7 +47,7 @@ export function criarControladorVisaoTotal(opcoes = {}) {
   const consumir = typeof opcoes.consumir === 'function'
     ? opcoes.consumir
     : () => Promise.resolve({ ok: false, erro: 'sem_servico', saldo: 0, estoque: 0 });
-  const duracaoMs = Math.max(1, inteiroSeguro(opcoes.duracaoMs ?? DURACAO_VISAO_TOTAL_MS));
+  const duracaoPadraoMs = Math.max(1, inteiroSeguro(opcoes.duracaoMs ?? DURACAO_VISAO_TOTAL_MS));
 
   let geracao = 0;
   let estado = 'inativo'; // inativo | consumindo | ativo
@@ -52,12 +55,14 @@ export function criarControladorVisaoTotal(opcoes = {}) {
   let chaveAtual = null;
   let timer = null;
   let ativadoAte = 0;
+  let duracaoAtivaMs = duracaoPadraoMs;
 
   function notificarEstado() {
     if (typeof opcoes.onEstado === 'function') {
       opcoes.onEstado({
         estado, usos, ativa: estado === 'ativo',
-        ocupado: estado !== 'inativo', chaveOperacao: chaveAtual
+        ocupado: estado !== 'inativo', chaveOperacao: chaveAtual,
+        duracaoMs: duracaoAtivaMs
       });
     }
   }
@@ -76,8 +81,28 @@ export function criarControladorVisaoTotal(opcoes = {}) {
   }
 
   /**
+   * Resolve a duração no instante da ativação. Nenhum timer antigo é alterado.
+   */
+  function resolverDuracao(contexto) {
+    const explicita = contexto.duracaoMs ?? opcoes.duracaoMs;
+    if (explicita !== undefined && explicita !== null) {
+      return Math.max(1, inteiroSeguro(explicita));
+    }
+    if (typeof opcoes.obterDuracaoMs === 'function') {
+      return Math.max(1, inteiroSeguro(
+        opcoes.obterDuracaoMs(contexto.dificuldade, contexto)
+      ));
+    }
+    if (contexto.dificuldade !== undefined && contexto.dificuldade !== null) {
+      return Math.max(1, inteiroSeguro(obterTempoVisaoTotal(contexto.dificuldade)));
+    }
+    return duracaoPadraoMs;
+  }
+
+  /**
    * Tenta ativar a habilidade.
-   * @param {{aguardandoComparacao?: boolean, partidaAtiva?: boolean}} contexto
+   * @param {{aguardandoComparacao?: boolean, partidaAtiva?: boolean,
+   *   dificuldade?: string, duracaoMs?: number}} contexto
    */
   async function ativar(contexto = {}) {
     if (contexto.partidaAtiva === false) {
@@ -130,15 +155,16 @@ export function criarControladorVisaoTotal(opcoes = {}) {
     }
 
     usos = inteiroSeguro(resultado.estoque);
+    duracaoAtivaMs = resolverDuracao(contexto);
     estado = 'ativo';
-    ativadoAte = agora() + duracaoMs;
+    ativadoAte = agora() + duracaoAtivaMs;
     notificarEstado();
 
     if (typeof opcoes.onAtivar === 'function') {
       opcoes.onAtivar({
         geracao: geracaoLocal,
         chaveOperacao: chave,
-        duracaoMs,
+        duracaoMs: duracaoAtivaMs,
         usos,
         duplicado: Boolean(resultado.duplicado)
       });
@@ -153,7 +179,7 @@ export function criarControladorVisaoTotal(opcoes = {}) {
       if (typeof opcoes.onRestaurar === 'function') {
         opcoes.onRestaurar({ geracao: geracaoLocal, chaveOperacao: chave, motivo: 'concluido' });
       }
-    }, duracaoMs);
+    }, duracaoAtivaMs);
 
     return {
       ok: true,
@@ -198,6 +224,6 @@ export function criarControladorVisaoTotal(opcoes = {}) {
     get restanteMs() {
       return estado === 'ativo' ? Math.max(0, ativadoAte - agora()) : 0;
     },
-    get duracaoMs() { return duracaoMs; }
+    get duracaoMs() { return duracaoAtivaMs; }
   };
 }
